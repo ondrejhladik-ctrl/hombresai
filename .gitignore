@@ -1,6 +1,8 @@
 # Keys, history and media live in %USERPROFILE%\.hombresai – never in this folder.
 node_modules/
 output/
+# the web version is built by GitHub Actions (web/build.mjs)
+web/dist/
 *.log
 .env
 .env.*

@@ -11,6 +11,16 @@ Double-click the **hombresai** shortcut on the desktop (or **`start.bat`** in th
 minimized window and the app opens in your browser at `http://127.0.0.1:4848`. If it’s already running, the shortcut
 just opens it again. Keep the server window open – closing it stops the app.
 
+## Web version
+
+The same app also runs on the web, without installing anything: **https://ondrejhladik-ctrl.github.io/hombresai/**
+
+- Every visitor uses their own keys (Settings) – keys, pictures, graphs and templates stay only in their browser.
+- The app’s own `server.js` runs inside the browser (a service worker) – `web/` holds the stand-ins for the parts of
+  Node it uses and the build (`web/build.mjs`); GitHub Actions publishes it on every push. The local app is unchanged.
+- Not on the web: Google Drive, the Cloudflare backup (Cloudflare doesn’t allow calls from web pages), connecting
+  Claude, and videos keep generating only while the page is open. For those, run the app on your computer.
+
 ## Keys and billing
 
 **Gemini (Nano Banana models)**

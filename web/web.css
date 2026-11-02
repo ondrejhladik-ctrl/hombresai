@@ -1,0 +1,8 @@
+/* The web version (GitHub Pages): what only works in the app on a computer is hidden –
+   Google Drive, the Cloudflare backup (Cloudflare doesn't allow calls from web pages), connecting Claude, opening folders. */
+#settingsModal section:has(#cfStatus),
+#settingsModal section:has(#mcpCodeCmd),
+#settingsModal section:has(#driveStatus),
+#openFolderBtn {
+  display: none !important;
+}
