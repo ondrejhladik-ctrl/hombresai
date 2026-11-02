@@ -1,0 +1,13 @@
+{
+  "name": "hombresai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A local studio for generating images with Gemini (Nano Banana) and open-source models, with photo Effects; images are saved to Google Drive",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js --open"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

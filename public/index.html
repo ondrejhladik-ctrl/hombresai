@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hombresai</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/fx-engine.js" defer></script>
+  <script src="/fx-ui.js" defer></script>
+  <script src="/vec-trace.js" defer></script>
+  <script src="/vec-ui.js" defer></script>
+  <script src="/nodes-core.js" defer></script>
+  <script src="/nodes-ui.js" defer></script>
+  <script src="/video-ui.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <script src="/intro.js"></script>
+  <header class="topbar">
+    <button class="icon-btn only-narrow" id="panelToggle" type="button" title="Parameters" aria-label="Parameters">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>
+    </button>
+    <a class="brand" href="/" aria-label="hombresai" title="hombresai">
+      <img class="brand-logo" src="/logo.svg" alt="" width="22" height="26">
+    </a>
+    <label class="search">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+      <input id="searchInput" type="search" placeholder="Search prompts…" autocomplete="off" aria-label="Search prompts">
+    </label>
+    <button class="chip-btn" id="favFilterBtn" type="button" aria-pressed="false">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z"/></svg>
+      <span>Favorites</span>
+    </button>
+    <div class="topbar-spacer"></div>
+    <div class="spend" id="spendInfo"></div>
+    <button class="icon-btn" id="openFolderBtn" type="button" title="Open the image folder on Google Drive" aria-label="Open the image folder on Google Drive">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>
+    </button>
+    <button class="btn ghost" id="settingsBtn" type="button">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg>
+      <span>Settings</span>
+    </button>
+  </header>
+
+  <div class="layout">
+    <nav class="rail" aria-label="Sections">
+      <button class="rail-btn" type="button" data-view="create" aria-label="Create">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M11 3.5 12.8 8l4.7 1.8-4.7 1.8L11 16.2l-1.8-4.6L4.5 9.8 9.2 8z"/><path d="m18.5 14.5.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>
+        <span>Create</span>
+      </button>
+      <button class="rail-btn" type="button" data-view="effects" aria-label="Effects">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 20 11-11"/><path d="m13 7 4 4"/><path d="M17 3v3M15.5 4.5h3M20 9v2M19 10h2M8 3v2M7 4h2"/></svg>
+        <span>Effects</span>
+      </button>
+      <button class="rail-btn" type="button" data-view="vectors" aria-label="Vectors">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 18 13l-2.6 6H8.6L6 13z"/><path d="M12 4v7.5"/><circle cx="12" cy="13" r="1.5"/><path d="M3 4h4M17 4h4"/><rect x="10" y="2.5" width="4" height="3" rx="0.5"/></svg>
+        <span>Vectors</span>
+      </button>
+      <button class="rail-btn" type="button" data-view="nodes" aria-label="Nodes">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="7" height="6" rx="1.2"/><rect x="14.5" y="14" width="7" height="6" rx="1.2"/><rect x="14.5" y="2.5" width="7" height="5" rx="1.2"/><path d="M9.5 7h2.5a2 2 0 0 1 2 2v0M9.5 7c3 0 3 10 5 10"/></svg>
+        <span>Nodes</span>
+      </button>
+      <button class="rail-btn" type="button" data-view="video" aria-label="Video">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="5" width="14" height="14" rx="2"/><path d="m16.5 10.5 5-3v9l-5-3z"/><path d="M6 9.5v5l4-2.5z"/></svg>
+        <span>Video</span>
+      </button>
+      <button class="rail-toggle" id="railToggle" type="button" title="Hide the sidebar" aria-label="Hide the sidebar" aria-expanded="true">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg>
+      </button>
+    </nav>
+    <aside class="panel" id="panel" aria-label="Generation parameters">
+      <div class="win-bar panel-bar"><h2>Parameters</h2></div>
+      <section class="field">
+        <div class="field-head"><h3>Model</h3><span class="field-note" id="modelSource"></span></div>
+        <div class="model-list" id="modelList" role="radiogroup" aria-label="Model"></div>
+      </section>
+      <section class="field">
+        <div class="field-head"><h3>Aspect ratio</h3></div>
+        <div class="ratio-grid" id="ratioGrid"></div>
+      </section>
+      <section class="field" id="sizeField">
+        <div class="field-head"><h3>Resolution</h3><span class="field-note">price per image</span></div>
+        <div class="seg" id="sizeSeg"></div>
+      </section>
+      <section class="field">
+        <div class="field-head"><h3>Images</h3><span class="field-note">per prompt</span></div>
+        <div class="seg" id="countSeg"></div>
+      </section>
+      <section class="field" id="thinkingField">
+        <div class="field-head"><h3>Thinking</h3><span class="field-note">quality vs. speed</span></div>
+        <div class="seg" id="thinkingSeg"></div>
+      </section>
+      <section class="field">
+        <div class="field-head"><h3>Style</h3><span class="field-note">added to the prompt</span></div>
+        <div class="style-grid" id="styleGrid"></div>
+      </section>
+      <section class="field" id="nodesField">
+        <div class="field-head"><h3>Nodes</h3><span class="field-note">camera, lens, light…</span></div>
+        <div class="node-pick">
+          <select class="fxe-select" id="nodeGraphSelect" aria-label="Node graph added to every prompt"></select>
+          <button class="btn small" type="button" id="nodeEditBtn">Edit</button>
+        </div>
+        <div class="node-chips" id="nodeChips"></div>
+      </section>
+    </aside>
+
+    <main class="main" id="createView">
+      <div class="gallery" id="gallery" aria-live="polite"></div>
+
+      <div class="composer">
+        <div class="composer-inner">
+          <div class="refs" id="refs"></div>
+          <div class="composer-box">
+            <textarea id="promptInput" rows="2" placeholder="Describe what you want to create… (Ctrl+Enter = generate)" aria-label="Prompt"></textarea>
+            <div class="composer-actions">
+              <button class="btn ghost" id="enhanceBtn" type="button" title="Rewrites your idea into a detailed English prompt with Gemini (references included)">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M11 3.5 12.8 8l4.7 1.8-4.7 1.8L11 16.2l-1.8-4.6L4.5 9.8 9.2 8z"/><path d="m18.5 14.5.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>
+                <span>Enhance prompt</span>
+              </button>
+              <button class="btn primary generate" id="generateBtn" type="button">
+                <span id="generateLabel">Generate</span>
+                <small id="generateCost"></small>
+              </button>
+            </div>
+          </div>
+          <div class="composer-foot">
+            <label class="check">
+              <input type="checkbox" id="multiToggle">
+              <span>Each line = separate prompt</span>
+            </label>
+            <span class="queue-info" id="queueInfo"></span>
+            <button class="link-btn" id="cancelQueueBtn" type="button" hidden>Cancel queue</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <main class="main effects-view" id="effectsView" aria-label="Effects">
+      <div class="fxe">
+        <aside class="fxe-library" aria-label="Effect gallery">
+          <div class="fxe-lib-head">
+            <h2>Effects</h2>
+            <button class="btn small primary" id="fxeNewBtn" type="button" title="Describe an effect and a free open-source AI coder writes it">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M11 3.5 12.8 8l4.7 1.8-4.7 1.8L11 16.2l-1.8-4.6L4.5 9.8 9.2 8z"/><path d="m18.5 14.5.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>
+              <span>New with AI</span>
+            </button>
+          </div>
+          <label class="search fxe-search">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+            <input id="fxeSearch" type="search" placeholder="Search effects…" autocomplete="off" aria-label="Search effects">
+          </label>
+          <div class="fxe-cats" id="fxeCats" aria-label="Effect categories"></div>
+          <div class="fxe-cards" id="fxeCards"></div>
+        </aside>
+
+        <section class="fxe-stage" aria-label="Preview">
+          <div class="fxe-toolbar">
+            <button class="btn small" id="fxeOpenBtn" type="button" title="Open an image or a video from your computer">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>
+              <span>Open image or video</span>
+            </button>
+            <button class="btn small ghost" id="fxeCameraBtn" type="button" aria-pressed="false">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6.5" width="13" height="11" rx="2"/><path d="m16 10.5 5-3v9l-5-3z"/></svg>
+              <span>Camera</span>
+            </button>
+            <span class="fxe-source-name" id="fxeSourceName"></span>
+            <div class="fxe-zoom" role="group" aria-label="Zoom">
+              <button class="icon-btn" id="fxeZoomOut" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+              <button class="chip-btn small" id="fxeZoomFit" type="button" title="Fit to the window">Fit</button>
+              <button class="icon-btn" id="fxeZoomIn" type="button" title="Zoom in" aria-label="Zoom in">+</button>
+            </div>
+            <button class="btn small ghost" id="fxeCompareBtn" type="button" title="Hold to see the original">Hold to compare</button>
+          </div>
+          <div class="fxe-viewport" id="fxeViewport">
+            <canvas id="fxeCanvas" hidden></canvas>
+            <div class="fxe-empty" id="fxeEmpty">
+              <b>Drop an image or a video here</b>
+              <span>…or click “Open image or video”, paste with Ctrl+V, use the camera, or pick one of your images below.</span>
+            </div>
+            <div class="fxe-busy" id="fxeBusy" hidden>
+              <div class="fxe-busy-box">
+                <span class="spinner"></span>
+                <span id="fxeBusyLabel">Working…</span>
+                <div class="fxe-progress" id="fxeProgress" hidden><span id="fxeProgressBar"></span></div>
+                <button class="btn small ghost" id="fxeBusyCancel" type="button" hidden>Cancel</button>
+              </div>
+            </div>
+          </div>
+          <div class="fxe-transport" id="fxeTransport" hidden>
+            <button class="icon-btn" id="fxePlay" type="button" aria-label="Play"></button>
+            <input type="range" id="fxeSeek" min="0" max="1000" step="1" value="0" aria-label="Position in the video">
+            <span class="fxe-time" id="fxeTime">0:00 / 0:00</span>
+            <button class="icon-btn" id="fxeMute" type="button" aria-label="Sound"></button>
+          </div>
+          <div class="fxe-strip-wrap" id="fxeStripWrap" hidden>
+            <span class="fxe-strip-label">Your images</span>
+            <div class="fxe-strip" id="fxeStrip"></div>
+          </div>
+        </section>
+
+        <aside class="fxe-inspector" id="fxeInspector" aria-label="Effect settings"></aside>
+      </div>
+    </main>
+
+    <main class="main video-view" id="videoView" aria-label="Video">
+      <div class="vd">
+        <aside class="vd-gen" id="vdGen" aria-label="Generate clips"></aside>
+        <section class="vd-stage" aria-label="Video editor">
+          <div class="vd-bar" id="vdBar"></div>
+          <div class="vd-screen-wrap">
+            <div class="vd-screen" id="vdScreen">
+              <video class="vd-player on"></video>
+              <video class="vd-player"></video>
+              <div class="vd-empty" id="vdEmpty">Generate a clip on the left, or click one of your clips to put it on the timeline.</div>
+            </div>
+          </div>
+          <div class="vd-transport" id="vdTransport"></div>
+          <div class="vd-timeline" id="vdTimeline">
+            <div class="vd-ruler" id="vdRuler"></div>
+            <div class="vd-track" id="vdTrack"></div>
+            <div class="vd-playhead" id="vdPlayhead"></div>
+          </div>
+        </section>
+        <aside class="vd-side" id="vdSide" aria-label="Selected part"></aside>
+      </div>
+    </main>
+
+    <main class="main nodes-view" id="nodesView" aria-label="Nodes">
+      <div class="nd">
+        <aside class="nd-lib" id="ndLib" aria-label="Graphs and node library"></aside>
+        <section class="nd-stage" aria-label="Node canvas">
+          <div class="nd-bar" id="ndBar"></div>
+          <div class="nd-canvas" id="ndCanvas">
+            <div class="nd-world" id="ndWorld"><svg class="nd-wires" id="ndWires" xmlns="http://www.w3.org/2000/svg"></svg></div>
+          </div>
+          <div class="nd-status">Drag from a port to another to connect · drag the canvas to move around · Ctrl + wheel zooms · Delete removes · Ctrl+D duplicates</div>
+        </section>
+        <aside class="nd-side" id="ndSide" aria-label="Prompt preview"></aside>
+      </div>
+    </main>
+
+    <main class="main vectors-view" id="vectorsView" aria-label="Vectors">
+      <div class="vx">
+        <div class="vx-tools" id="vxTools" role="toolbar" aria-label="Tools" aria-orientation="vertical"></div>
+        <section class="vx-stage" aria-label="Artboard">
+          <div class="vx-bar" id="vxBar"></div>
+          <div class="vx-viewport" id="vxViewport">
+            <svg id="vxStage" xmlns="http://www.w3.org/2000/svg" aria-label="Artboard"></svg>
+            <div class="vx-busy" id="vxBusy" hidden>
+              <div class="fxe-busy-box"><span class="spinner"></span><span id="vxBusyText">Working…</span><span class="fxe-progress" hidden><span id="vxBusyBar"></span></span></div>
+            </div>
+          </div>
+          <div class="vx-status" id="vxStatus"></div>
+        </section>
+        <aside class="vx-side" aria-label="Properties">
+          <div class="vx-tabs" id="vxTabs" role="tablist"></div>
+          <div class="vx-panel" id="vxPanel"></div>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <div class="lightbox" id="lightbox" hidden>
+    <div class="lb-stage" id="lbStage">
+      <button class="lb-nav prev" id="lbPrev" type="button" aria-label="Previous">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg>
+      </button>
+      <img id="lbImg" alt="">
+      <video id="lbVideo" controls playsinline loop hidden></video>
+      <button class="lb-nav next" id="lbNext" type="button" aria-label="Next">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+      </button>
+    </div>
+    <aside class="lb-side">
+      <div class="lb-top">
+        <span class="lb-counter" id="lbCounter"></span>
+        <button class="icon-btn" id="lbClose" type="button" title="Close (Esc)" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="lb-actions" id="lbActions"></div>
+      <dl class="lb-info" id="lbInfo"></dl>
+    </aside>
+  </div>
+
+  <div class="modal" id="settingsModal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="modal-head">
+        <h2 id="settingsTitle">Settings</h2>
+        <button class="icon-btn" id="settingsClose" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <section>
+          <h3>Gemini API key</h3>
+          <p class="key-status" id="keyStatus"></p>
+          <form class="key-row" id="keyForm" autocomplete="off">
+            <input type="password" id="keyInput" placeholder="Paste your API key from AI Studio" spellcheck="false" aria-label="API key">
+            <button class="icon-btn" id="keyToggle" type="button" title="Show key" aria-label="Show key">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+            <button class="btn primary" id="keySave" type="submit">Save key</button>
+          </form>
+          <button class="link-btn danger" id="keyRemove" type="button" hidden>Remove saved key</button>
+          <div class="callout">
+            <ol>
+              <li>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">Google AI Studio → API keys</a> and click <b>Create API key</b>.</li>
+              <li><b>Enable billing.</b> Image models (Nano Banana) aren’t in the Free Tier – click <b>Set up billing</b> on your project and link a card. Then you only pay for what you generate (Nano Banana 2.1 ≈ <span data-usd="0.0336"></span> per 1K image).</li>
+              <li>Paste the key here. It’s stored only on this computer in <code id="configPath"></code>, not in OneDrive.</li>
+            </ol>
+            <p>Tip: in <a href="https://console.cloud.google.com/billing" target="_blank" rel="noopener noreferrer">Google Cloud Billing</a>, set up <b>Budgets &amp; alerts</b> so you’re notified when spending goes over your limit.</p>
+          </div>
+        </section>
+        <section>
+          <h3>Open-source models (Pollinations)</h3>
+          <p class="muted small">Z-Image Turbo, FLUX.2 klein, FLUX.1 schnell and the free AI coder in Effects run through <a href="https://enter.pollinations.ai" target="_blank" rel="noopener noreferrer">Pollinations</a> with one free API key – they use Pollinations’ free daily credit (“pollen”), not your Google billing. When the pollen runs out, the image models switch to Cloudflare (if connected) or to Hugging Face’s free GPUs by themselves.</p>
+          <p class="key-status" id="pollStatus"></p>
+          <div class="key-row">
+            <input type="password" id="pollKeyInput" placeholder="Paste your Pollinations key (sk_…)" spellcheck="false" autocomplete="off" aria-label="Pollinations API key">
+            <button class="btn" id="pollKeySave" type="button">Save key</button>
+            <button class="btn primary" id="pollKeyPaste" type="button" title="Reads the key you just copied on Pollinations and connects">Paste &amp; connect</button>
+          </div>
+          <button class="link-btn danger" id="pollKeyRemove" type="button" hidden>Remove Pollinations key</button>
+          <div class="callout">
+            <ol>
+              <li><a class="btn small" href="https://enter.pollinations.ai/keys" target="_blank" rel="noopener noreferrer">Get a free key ↗</a> – sign in at enter.pollinations.ai (free, e.g. with GitHub or Google).</li>
+              <li>Create a <b>secret key</b> (it starts with <code>sk_</code>) and copy it.</li>
+              <li>Click <b>Paste &amp; connect</b> above. The app checks the key with Pollinations and stores it only on this computer.</li>
+            </ol>
+          </div>
+        </section>
+        <section>
+          <h3>Cloudflare – free backup for open-source models</h3>
+          <p class="muted small">When Pollinations is down or out of pollen, the open-source models and the free AI coder run on <a href="https://developers.cloudflare.com/workers-ai/" target="_blank" rel="noopener noreferrer">Cloudflare Workers AI</a> instead – on its free daily allowance (about 95 FLUX.2 klein or 170 FLUX.1 schnell images a day). Z-Image Turbo is drawn by FLUX.2 klein there.</p>
+          <p class="key-status" id="cfStatus"></p>
+          <div class="key-row">
+            <input type="text" id="cfAccountInput" placeholder="Account ID (32 characters)" spellcheck="false" autocomplete="off" aria-label="Cloudflare Account ID">
+          </div>
+          <div class="key-row">
+            <input type="password" id="cfTokenInput" placeholder="Workers AI API token" spellcheck="false" autocomplete="off" aria-label="Cloudflare API token">
+            <button class="btn primary" id="cfSave" type="button">Save &amp; check</button>
+          </div>
+          <button class="link-btn danger" id="cfRemove" type="button" hidden>Remove Cloudflare</button>
+          <div class="callout">
+            <ol>
+              <li><a class="btn small" href="https://dash.cloudflare.com/sign-up" target="_blank" rel="noopener noreferrer">Create a free account ↗</a> – or sign in. No card needed.</li>
+              <li><a class="btn small" href="https://dash.cloudflare.com/?to=/:account/ai/workers-ai" target="_blank" rel="noopener noreferrer">Open Workers AI ↗</a> and click <b>Use REST API</b>. Copy the <b>Account ID</b> shown there.</li>
+              <li>On the same page click <b>Create a Workers AI API Token</b>, confirm it and copy the token – Cloudflare shows it only once.</li>
+              <li>Paste both above and click <b>Save &amp; check</b>. The app checks them with Cloudflare and stores them only on this computer.</li>
+            </ol>
+          </div>
+        </section>
+        <section>
+          <h3>Hugging Face – free open models</h3>
+          <p class="muted small">The video models Wan 2.2, LTX-2.3 and LTX-Video, the image model Qwen-Image, and the other open image models whenever Pollinations can’t serve them run free on <a href="https://huggingface.co/docs/hub/spaces-zerogpu" target="_blank" rel="noopener noreferrer">Hugging Face’s shared GPUs</a>. There’s a daily allowance of GPU time: 2 minutes without an account, 5 minutes with a free account’s token – a few short clips or a few dozen images a day. Everything works without a token too.</p>
+          <p class="key-status" id="hfStatus"></p>
+          <div class="key-row">
+            <input type="password" id="hfTokenInput" placeholder="hf_…" spellcheck="false" autocomplete="off" aria-label="Hugging Face token">
+            <button class="btn primary" id="hfSave" type="button">Save &amp; check</button>
+          </div>
+          <button class="link-btn danger" id="hfRemove" type="button" hidden>Remove Hugging Face token</button>
+          <div class="callout">
+            <ol>
+              <li><a class="btn small" href="https://huggingface.co/join" target="_blank" rel="noopener noreferrer">Create a free account ↗</a> – or sign in. No card needed.</li>
+              <li><a class="btn small" href="https://huggingface.co/settings/tokens/new?tokenType=read" target="_blank" rel="noopener noreferrer">Create a token ↗</a> of the type <b>Read</b> and copy it (it starts with <code>hf_</code>).</li>
+              <li>Paste it above and click <b>Save &amp; check</b>. The app checks it with Hugging Face and stores it only on this computer.</li>
+            </ol>
+          </div>
+        </section>
+        <section>
+          <h3>Connect Claude</h3>
+          <p class="muted small">Claude can use the whole app – generate images and videos, build and run node graphs, browse the gallery, draw SVG – through the hombresai connector (an MCP server). It runs on this computer and starts the app by itself when needed.</p>
+          <div class="callout">
+            <p><b>Claude Code</b> – this folder already contains <code>.mcp.json</code>: open Claude Code in it and approve “hombresai”. To have it in every folder, run once:</p>
+            <div class="copy-row"><code id="mcpCodeCmd"></code><button class="btn small" type="button" data-copy="mcpCodeCmd">Copy</button></div>
+            <p><b>Claude Desktop</b> – Settings → Developer → Edit Config, and add this to <code>claude_desktop_config.json</code>, then restart Claude:</p>
+            <div class="copy-row"><pre id="mcpDesktopCfg"></pre><button class="btn small" type="button" data-copy="mcpDesktopCfg">Copy</button></div>
+            <p>Then ask Claude for example: “Use hombresai: make a portrait node graph with an 85 mm lens at f/1.8 and generate two images.”</p>
+          </div>
+        </section>
+        <section>
+          <h3>Generation</h3>
+          <label class="setting-row">
+            <span>Concurrent requests<small>How many images generate at the same time (1–8). Lower it if you hit “rate limit” errors.</small></span>
+            <input type="number" id="concurrencyInput" min="1" max="8" step="1">
+          </label>
+          <label class="setting-row">
+            <span>Model for “Enhance prompt”<small>A cheap text model – one enhancement costs about CZK 0.01–0.02. Default: gemini-3.1-flash-lite.</small></span>
+            <input type="text" id="enhanceModelInput" spellcheck="false">
+          </label>
+          <label class="setting-row">
+            <span>Store requests in AI Studio logs<small>Off = sends <code>store: false</code>, so your prompts and references aren’t saved in your project’s logs.</small></span>
+            <input type="checkbox" id="storeInput" class="switch">
+          </label>
+        </section>
+        <section>
+          <h3>Prices</h3>
+          <label class="setting-row">
+            <span>Show prices incl. 21% VAT<small>Google invoices without VAT only to businesses with a valid VAT ID (reverse charge). Individuals and businesses without a VAT ID are charged VAT.</small></span>
+            <input type="checkbox" id="vatInput" class="switch">
+          </label>
+          <p class="muted small" id="fxInfo"></p>
+        </section>
+        <section>
+          <h3>Google Drive</h3>
+          <p class="muted small">Generated images are saved only to your Google Drive, in the <b>hombresai</b> folder (one subfolder per day). Only the history, small thumbnails and references stay on this computer: <code id="outputPath"></code></p>
+          <p class="key-status" id="driveStatus"></p>
+          <div class="drive-actions">
+            <button class="btn primary" id="driveConnect" type="button">Connect Google Drive</button>
+            <button class="btn ghost" id="openFolderBtn2" type="button">Open folder on Drive</button>
+            <button class="link-btn danger" id="driveDisconnect" type="button" hidden>Disconnect Drive</button>
+          </div>
+          <details class="drive-client" id="driveClientBox">
+            <summary>Google OAuth client (Client ID and secret)</summary>
+            <p class="muted small">Create it in Google Cloud Console → Google Auth Platform → Clients → type “Desktop app”.</p>
+            <label class="setting-row">
+              <span>Client ID</span>
+              <input type="text" id="driveClientId" spellcheck="false" autocomplete="off" placeholder="….apps.googleusercontent.com">
+            </label>
+            <label class="setting-row">
+              <span>Client secret<small>Stored only in the config on this computer.</small></span>
+              <input type="password" id="driveClientSecret" spellcheck="false" autocomplete="off" placeholder="GOCSPX-…">
+            </label>
+          </details>
+        </section>
+      </div>
+      <div class="modal-foot">
+        <span class="settings-msg" id="settingsMsg" role="status"></span>
+        <button class="btn primary" id="settingsSave" type="button">Save settings</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="fxeAiModal" hidden>
+    <div class="modal-card fxe-ai-card" role="dialog" aria-modal="true" aria-labelledby="fxeAiTitle">
+      <div class="modal-head">
+        <h2 id="fxeAiTitle">Create an effect with AI</h2>
+        <button class="icon-btn" id="fxeAiClose" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="muted small">Describe the look. An AI coder writes it as a small GPU program with sliders – it then runs live on images, videos and the camera. With a Pollinations key the open-source coders are free.</p>
+        <textarea id="fxeAiPrompt" rows="4" aria-label="Describe the effect"></textarea>
+        <div class="fxe-ai-examples" id="fxeAiExamples"></div>
+        <label class="setting-row">
+          <span>AI coder<small id="fxeAiKeyNote">No Pollinations key yet – add one in Settings to use the free open-source coders.</small></span>
+          <select id="fxeAiModel" aria-label="AI coder"></select>
+        </label>
+        <div class="fxe-ai-log" id="fxeAiLog" aria-live="polite"></div>
+      </div>
+      <div class="modal-foot">
+        <span class="settings-msg" id="fxeAiMsg" role="status"></span>
+        <button class="btn primary" id="fxeAiGo" type="button">Create effect</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="fxeCodeModal" hidden>
+    <div class="modal-card fxe-code-card" role="dialog" aria-modal="true" aria-labelledby="fxeCodeTitle">
+      <div class="modal-head">
+        <div>
+          <h2 id="fxeCodeTitle">Effect code</h2>
+          <span class="muted small" id="fxeCodeFile"></span>
+        </div>
+        <button class="icon-btn" id="fxeCodeClose" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="fxe-code-body">
+        <div class="fxe-editor">
+          <pre class="fxe-gutter" id="fxeGutter" aria-hidden="true"></pre>
+          <textarea id="fxeCodeText" spellcheck="false" autocomplete="off" aria-label="GLSL code of the effect"></textarea>
+        </div>
+        <div class="fxe-code-errors" id="fxeCodeErrors" aria-live="polite"></div>
+        <p class="muted small">GLSL ES 3.00. Write a <code>vec4 effect(vec2 uv)</code> function; every <code>uniform … // @param</code> becomes a slider. The full guide with all helpers is in <code>effects/README.md</code>. Ctrl+Enter = run, Ctrl+S = save.</p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn ghost" id="fxeCodeFix" type="button">Ask AI to fix</button>
+        <span class="topbar-spacer"></span>
+        <button class="btn" id="fxeCodeRun" type="button">Run</button>
+        <button class="btn primary" id="fxeCodeSave" type="button">Save effect</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="drop-overlay" id="dropOverlay" hidden>
+    <div class="drop-box">Drop images here – they’ll be added as references</div>
+  </div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <input type="file" id="fileInput" accept="image/*,.heic,.heif" multiple hidden>
+  <input type="file" id="fxeFileInput" accept="image/*,video/*" hidden>
+  <input type="file" id="vxFileInput" accept=".svg,image/svg+xml,image/*" hidden>
+</body>
+</html>
