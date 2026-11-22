@@ -59,9 +59,14 @@ await build({
   logLevel: 'warning',
 });
 
-// 2) the pages: public/ as it is, except index.html loads through boot.js and uses paths relative to the site
+// 2) the pages: public/ as it is (files and subfolders like samples/), except index.html, which
+// loads through boot.js and uses paths relative to the site
 for (const name of fs.readdirSync(path.join(ROOT, 'public'))) {
-  if (name !== 'index.html') fs.copyFileSync(path.join(ROOT, 'public', name), path.join(OUT, name));
+  if (name === 'index.html') continue;
+  const src = path.join(ROOT, 'public', name);
+  const dest = path.join(OUT, name);
+  if (fs.statSync(src).isDirectory()) fs.cpSync(src, dest, { recursive: true });
+  else fs.copyFileSync(src, dest);
 }
 let html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 const scripts = [];
