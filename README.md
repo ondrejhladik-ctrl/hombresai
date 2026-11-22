@@ -56,6 +56,19 @@ Tip: set up *Budgets & alerts* in [Google Cloud Billing](https://console.cloud.g
 | FLUX.2 klein | open source (Apache 2.0) | free tier – also edits with references, works with Effects |
 | FLUX.1 schnell | open source (Apache 2.0) | free tier – text only |
 
+### Free open-source models found online
+
+Once a day the app searches Hugging Face, Pollinations, Cloudflare (when connected) and the models of ComfyUI’s official
+templates for open models that run for free – open source, and models with their author’s own license (FLUX.1 dev,
+SD 3.5, Qwen-Image 2.1… free for personal use, each marked with what its license allows; `--open-only` leaves them
+out) – checks it can drive each one, and sorts them best first into **images**, **videos** and **code**. Image
+models join the model menu under “Found free online”, plus **Best free (auto)**, which tries the best free models one
+after another until one works. Video models join the Video view, code models the AI coders in Effects and Vectors.
+Every run is remembered: models that have made a picture go first, a model that fails twice is hidden for a few days.
+(There are no automatic test pictures: on Hugging Face each run books 60–90 s of the free GPU time.) See them all
+with their state, or search again, in Settings → Free open-source models; or run `npm run free-models` (the script is
+`scripts/free-models.js`). Models that can’t read node specifications (XML, JSON) aren’t offered in Nodes.
+
 Gemini prices are converted from USD at the CNB rate of CZK 21.782/USD (26 Oct 2026); the app downloads the current
 rate by itself and shows an estimate next to the Generate button plus today’s spending. Without VAT (businesses with a
 valid VAT ID) it’s 21% less – VAT can be switched off in Settings. Your exact spending is in AI Studio.

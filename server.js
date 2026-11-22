@@ -167,7 +167,7 @@ const OPEN_MODELS = [
     refsHint: 'no references – text only',
     hfOnly: true,
   },
-].map(m => ({ ...m, provider: 'pollinations', group: 'open', tag: 'Open source', free: true, ratios: RATIOS_STD, sizes: [], thinking: null, price: null }));
+].map(m => ({ ...m, provider: 'pollinations', open: true, group: 'open', tag: 'Open source', free: true, ratios: RATIOS_STD, sizes: [], thinking: null, price: null }));
 
 const MODELS_BY_ID = new Map([...KNOWN_MODELS, ...OPEN_MODELS].map(m => [m.id, m]));
 const KNOWN_BY_ID = new Map(KNOWN_MODELS.map(m => [m.id, m]));
@@ -438,6 +438,7 @@ function publicConfig() {
     pollinations: { hasKey: Boolean(config.pollinationsKey), keyHint: keyHint(config.pollinationsKey), ...(config.pollinationsKey ? config.pollinationsInfo : null) },
     cloudflare: { hasKey: hasCloudflare(), accountHint: keyHint(config.cloudflare?.accountId), tokenHint: keyHint(config.cloudflare?.token), ...(hasCloudflare() ? config.cloudflareInfo : null) },
     huggingface: { hasToken: Boolean(config.hfToken), tokenHint: keyHint(config.hfToken), user: config.hfToken ? config.hfInfo?.user : undefined },
+    connect: { origin: config.connectOrigin || '' },
     settings: { enhanceModel: config.enhanceModel, concurrency: config.concurrency, store: config.store, vat: config.vat },
     fx: config.fx?.usdCzk ? { usdCzk: config.fx.usdCzk, date: config.fx.date } : FALLBACK_FX,
     drive: driveStatus(),
@@ -937,6 +938,8 @@ function describeCloudflareError(err) {
   const base = { status: err.status, detail: msg };
   if (err.network) return { ...base, code: 'network', message: msg, hint: 'Check your internet connection.', retryable: true };
   if (/neuron|daily (free )?allocation|free allocation|quota/i.test(msg)) {
+    cfQuotaUntil = new Date().setUTCHours(24, 0, 0, 0); // remembered: the models that need it are hidden until it renews
+    saveFreeLimits();
     return { ...base, code: 'cloudflare_quota', message: 'Today’s free Cloudflare allowance is used up.', hint: 'It renews at midnight UTC (1:00 in Czechia). Until then use a Gemini model.' };
   }
   if (err.status === 401 || err.status === 403 || /authenticat|unauthori[sz]ed|permission/i.test(msg)) {
@@ -1049,9 +1052,9 @@ async function cloudflareGenerate(meta, prompt, refs, aspectRatio) {
   return { images: [{ mimeType: sniffMime(Buffer.from(b64.slice(0, 32), 'base64')), data: b64 }], text: '', usageMetadata: null, via: 'cloudflare' };
 }
 
-async function cloudflareChat(system, user, maxTokens) {
+async function cloudflareChat(system, user, maxTokens, model = CF_CODER) {
   const res = await cloudflareRequest('/ai/v1/chat/completions', {
-    body: { model: CF_CODER, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.3, max_tokens: maxTokens },
+    body: { model, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.3, max_tokens: maxTokens },
   });
   const content = res.json?.choices?.[0]?.message?.content;
   return Array.isArray(content) ? content.map(part => part?.text || '').join('') : String(content || '');
@@ -1076,6 +1079,7 @@ async function openGenerate(meta, prompt, refs, aspectRatio) {
       const info = err.info || describeError(err);
       if (i === routes.length - 1 || !OPEN_FALLBACK_CODES.has(info.code)) throw err;
       if (name === 'Pollinations' && ['pollinations_balance', 'pollinations_outage'].includes(info.code)) pollinationsPausedUntil = Date.now() + 10 * 60 * 1000;
+      if (info.code === 'pollinations_balance') notePollen(0);
       console.log(`  ! ${name}: ${info.message} → ${routes[i + 1][0]}`);
     }
   }
@@ -1469,6 +1473,22 @@ async function handleConfig(body) {
       driveToken = null;
     }
   }
+  if (typeof body.connectOrigin === 'string') {
+    const raw = body.connectOrigin.trim();
+    if (!raw) {
+      delete config.connectOrigin;
+    } else {
+      let origin;
+      try {
+        const u = new URL(raw);
+        if (!['http:', 'https:'].includes(u.protocol) || u.pathname !== '/' || u.search || u.hash) throw new Error('bad');
+        origin = u.origin;
+      } catch {
+        throw httpError(400, 'Enter the address of your onestoapp site, like https://yoursite.com (no path).');
+      }
+      config.connectOrigin = origin;
+    }
+  }
   await saveConfig();
   return publicConfig();
 }
@@ -1488,10 +1508,13 @@ let modelCache = null;
 async function handleModels() {
   const base = KNOWN_MODELS.map(m => ({ ...m, known: true, available: null }));
   // Hugging Face's free GPUs serve the open models without any key, so none of them is ever blocked
-  const open = OPEN_MODELS.map(m => ({ ...m, known: true, available: null, keyMissing: false }));
+  const routes = freeRoutesNow();
+  const open = [FREE_AUTO_MODEL, ...OPEN_MODELS, ...freeImageModels()].map(m => ({ ...m, availableNow: availableNow(m, routes) }))
+    .map(({ found, ...m }) => ({ ...m, known: true, available: null, keyMissing: false }));
+  const freeStatus = freeStatusNow();
   const { key } = getApiKey();
-  if (!key) return { models: [...base, ...open], source: 'static' };
-  if (modelCache && modelCache.key === key && Date.now() - modelCache.at < MODEL_CACHE_MS) return modelCache.value;
+  if (!key) return { models: [...base, ...open], source: 'static', freeStatus };
+  if (modelCache && modelCache.key === key && Date.now() - modelCache.at < MODEL_CACHE_MS) return { ...modelCache.value, models: [...modelCache.value.models, ...open], freeStatus };
   try {
     const imageModels = (await listModels(key)).filter(m =>
       (m.supportedGenerationMethods || []).includes('generateContent')
@@ -1518,12 +1541,11 @@ async function handleModels() {
         maxRefs: MAX_REFS,
       });
     }
-    models.push(...open);
     const value = { models, source: 'api' };
     modelCache = { key, at: Date.now(), value };
-    return value;
+    return { ...value, models: [...models, ...open], freeStatus };
   } catch (err) {
-    return { models: [...base, ...open], source: 'static', warning: describeError(err).message };
+    return { models: [...base, ...open], source: 'static', warning: describeError(err).message, freeStatus };
   }
 }
 
@@ -1542,7 +1564,7 @@ async function stashImage(buf, mimeType, now, slug) {
 async function handleGenerate(body) {
   const model = String(body.model || '');
   if (!MODEL_ID_RE.test(model)) throw httpError(400, 'Invalid model.');
-  const meta = MODELS_BY_ID.get(model);
+  const meta = MODELS_BY_ID.get(model) || freeModelMeta(model);
   const prompt = String(body.prompt || '').trim().slice(0, MAX_PROMPT_CHARS);
   const refs = cleanRefs(body.refs);
   if (!prompt && !refs.length) throw httpError(400, 'Write a prompt or add a reference.');
@@ -1554,8 +1576,8 @@ async function handleGenerate(body) {
   const started = Date.now();
   let result;
   try {
-    result = meta?.provider === 'pollinations'
-      ? await openGenerate(meta, prompt, refs, aspectRatio)
+    result = meta?.open
+      ? await freeGenerate(meta, prompt, refs, aspectRatio)
       : await geminiGenerate(model, prompt, refs, { aspectRatio, imageSize, thinkingLevel });
   } catch (err) {
     console.log(`  ✗ ${model}: ${String(err.info?.message || err.message).split('\n')[0].slice(0, 160)}`);
@@ -1586,7 +1608,7 @@ async function handleGenerate(body) {
       batchCreatedAt,
       index: (Number(body.index) || 0) + i / 10,
       createdAt: now.toISOString(),
-      model,
+      model: result.model || model, // “Best free (auto)” says which model made it
       prompt,
       userPrompt: String(body.userPrompt ?? prompt).slice(0, MAX_PROMPT_CHARS),
       style: typeof body.style === 'string' ? body.style.slice(0, 80) : null,
@@ -1613,7 +1635,7 @@ async function handleGenerate(body) {
   history.unshift(...items);
   await saveHistory();
   scheduleUploads();
-  console.log(`  ✓ ${model} · ${imageSize || '–'} · ${aspectRatio || 'auto'} · ${(durationMs / 1000).toFixed(1)} s${refs.length ? ` · ${refs.length} ref.` : ''}`);
+  console.log(`  ✓ ${result.model || model} · ${imageSize || '–'} · ${aspectRatio || 'auto'} · ${(durationMs / 1000).toFixed(1)} s${refs.length ? ` · ${refs.length} ref.` : ''}`);
   return { items: items.map(publicItem) };
 }
 
@@ -1759,7 +1781,7 @@ async function handleEffectsList() {
   return {
     builtin,
     custom,
-    coder: { models: CODER_MODELS, pollinations: Boolean(config.pollinationsKey) || hasCloudflare(), gemini: Boolean(getApiKey().key) },
+    coder: { models: publicCoders(coderModels()), vectorModels: publicCoders(coderModels({ svg: true })), pollinations: Boolean(config.pollinationsKey) || hasCloudflare(), cloudflare: hasCloudflare(), gemini: Boolean(getApiKey().key) },
   };
 }
 
@@ -1863,6 +1885,7 @@ async function coderPollinations(model, system, user, { maxTokens = 8000 } = {})
     failure = err;
   }
   const code = describePollinationsError(failure).code;
+  if (code === 'pollinations_balance') notePollen(0);
   // Pollinations can't serve it: the connected Cloudflare account takes over
   if (hasCloudflare() && CF_FALLBACK_CODES.has(code)) {
     console.log(`  ! Pollinations: ${describePollinationsError(failure).message} → Cloudflare Workers AI`);
@@ -1905,7 +1928,7 @@ async function handleEffectAi(body) {
   const base = typeof body.source === 'string' ? body.source.slice(0, MAX_EFFECT_BYTES) : '';
   const error = typeof body.error === 'string' ? body.error.slice(0, 4000) : '';
   if (!prompt) throw httpError(400, 'Describe the effect you want.');
-  const model = CODER_MODELS.find(m => m.id === body.model) || CODER_MODELS[0];
+  const model = coderModels().find(m => m.id === body.model) || CODER_MODELS[0];
   const system = `${CODER_INTRO}\n\n${await effectGuide()}`;
   let user;
   if (error && base) {
@@ -1916,7 +1939,7 @@ async function handleEffectAi(body) {
     user = `Create a new effect: ${prompt}`;
   }
   const started = Date.now();
-  const text = model.provider === 'gemini' ? await coderGemini(model, system, user) : await coderPollinations(model, system, user);
+  const text = await runCoder(model, system, user);
   const source = extractGlsl(text);
   if (!source) {
     throw httpError(502, 'The AI coder didn’t return any shader code.', {
@@ -2288,14 +2311,15 @@ async function handleVectorAi(body) {
   const prompt = String(body.prompt || '').trim().slice(0, 2000);
   const base = typeof body.source === 'string' ? body.source.slice(0, 200000) : '';
   if (!prompt) throw httpError(400, 'Describe what to draw.');
-  const model = CODER_MODELS.find(m => m.id === body.model) || CODER_MODELS[0];
+  const model = coderModels({ svg: true }).find(m => m.id === body.model) || CODER_MODELS[0];
+  if (model.svgOnly && base.trim()) throw httpError(400, `${model.label} can only draw new drawings – pick another AI model to change this one.`);
   const user = base.trim()
     ? `Here is an existing SVG drawing. Change it as follows: ${prompt}\n\nKeep everything that still fits, keep the viewBox, and return the complete new SVG.\n\n\`\`\`svg\n${base}\n\`\`\``
     : `Draw this as an SVG: ${prompt}`;
   const started = Date.now();
-  const text = model.provider === 'gemini'
-    ? await coderGemini(model, VECTOR_INTRO, user, { maxTokens: 16384 })
-    : await coderPollinations(model, VECTOR_INTRO, user, { maxTokens: 12000 });
+  const text = model.svgOnly
+    ? await foundSvg(model.found, prompt)
+    : await runCoder(model, VECTOR_INTRO, user, { maxTokens: model.provider === 'gemini' ? 16384 : 12000 });
   const svg = stripUnsafeSvg(extractSvg(text));
   if (!svg || unsafeSvg(svg)) {
     throw httpError(502, 'The AI didn’t return a usable drawing.', {
@@ -2573,7 +2597,8 @@ async function hfApiInfo(s) {
   }
   if (info.status !== 200 || !info.json?.named_endpoints) throw hfUnavailable(s, info.status);
   if (cfg.status !== 200 || !Array.isArray(cfg.json?.dependencies)) throw hfUnavailable(s, cfg.status);
-  const result = { ...info.json, dependencies: cfg.json.dependencies };
+  const components = (cfg.json.components || []).map(c => ({ id: c.id, type: c.type, props: { label: c.props?.label, minimum: c.props?.minimum, maximum: c.props?.maximum, step: c.props?.step, value: c.props?.value, choices: c.props?.choices, max_length: c.props?.max_length } }));
+  const result = { ...info.json, dependencies: cfg.json.dependencies, components };
   hfInfoCache.set(s.host, { at: Date.now(), info: result });
   return result;
 }
@@ -2594,6 +2619,7 @@ function hfRunError(s, payload) {
     const wait = /try again in ([\d:]+)/i.exec(msg)?.[1];
     const ask = /\((\d+)s requested vs\.? (\d+)s left\)/i.exec(msg);
     const back = wait && /[1-9]/.test(wait) ? ` – it comes back in ${wait.replace(/^0:/, '')} (h:mm:ss)` : ' for now';
+    noteHfQuota(wait, ask ? Number(ask[2]) : null);
     return httpError(429, `The free GPU time on Hugging Face is used up${back}.${ask ? ` ${s.title} books ${ask[1]} s per run, ${ask[2]} s are left.` : ''}`, {
       code: 'hf_quota', detail: msg.slice(0, 300),
       hint: config.hfToken
@@ -2639,7 +2665,7 @@ async function hfCall(s, info, data, signal, onProgress) {
       if (msg.msg === 'estimation') onProgress?.({ rank: msg.rank, eta: msg.rank_eta });
       else if (msg.msg === 'process_starts') onProgress?.({ started: true });
       else if (msg.msg === 'process_completed') {
-        if (msg.success && msg.output?.data) return msg.output.data;
+        if (msg.success && msg.output?.data) { if (hfQuotaUntil) { hfQuotaUntil = 0; saveFreeLimits(); } return msg.output.data; }
         throw hfRunError(s, msg.output?.error || msg.title || null);
       } else if (msg.msg === 'unexpected_error') throw hfRunError(s, msg.message || null);
     }
@@ -2734,11 +2760,424 @@ async function hfImageGenerate(meta, prompt, refs, aspectRatio) {
 }
 
 // The open models read plain prose – the XML/JSON/Markdown copy of a node specification only adds noise for them.
-const openVideoPrompt = prompt => prompt.split(/\n\n(?:Shot|Video) specification – follow every value exactly/)[0].trim().slice(0, 1500);
+const plainPrompt = prompt => prompt.split(/\n\n(?:Shot|Video) specification – follow every value exactly/)[0].trim();
+const openVideoPrompt = prompt => plainPrompt(prompt).slice(0, 1500);
+
+// ── Free open-source models found online (scripts/free-models.js) ───────────
+// The finder looks at Hugging Face, Pollinations and Cloudflare for open-source models that run for free and sorts
+// them into image, video and code models. Image ones join the model menu (and “Best free (auto)”), code ones join the
+// AI coders for effects and SVG. The list is kept in .hombresai/free-models.json and searched again once a day.
+
+const FreeModels = require('./scripts/free-models.js');
+const FREE_MODELS_FILE = path.join(DATA_DIR, 'free-models.json');
+const FREE_MODELS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const FREE_AUTO_MODEL = {
+  id: 'free-auto',
+  label: 'Best free (auto)',
+  provider: 'free',
+  open: true,
+  auto: true,
+  group: 'open',
+  tag: 'Auto',
+  free: true,
+  desc: 'Tries the best free open-source models one after another until one works – the built-in ones and the ones found online, best first. The gallery shows which model made each image. With references it uses FLUX.2 klein.',
+  refs: true,
+  maxRefs: 4,
+  refsHint: 'up to 4 references (FLUX.2 klein)',
+  ratios: RATIOS_STD,
+  sizes: [],
+  thinking: null,
+  price: null,
+  nodes: false,
+};
+let freeCatalog = null;
+let freeSearch = null;      // the search that's running
+let freeSearchError = null; // why the last one failed
+
+// ── Which free models can run right now ─────────────────────────────────────
+// The menus show only these: a model whose only free place is used up (Hugging Face's GPU time, no pollen, today's
+// Cloudflare allowance) is hidden until it comes back, instead of failing when you click Generate.
+let hfQuotaUntil = 0;   // Hugging Face's free GPU time is used up until then
+let cfQuotaUntil = 0;   // today's free Cloudflare allowance is used up until midnight UTC
+let pollenBalance = null;
+let pollenCheckedAt = 0;
+
+function noteHfQuota(wait, left) {
+  if (left != null && left >= 30) return; // some time is left – smaller runs still fit
+  const [h = 0, m = 0, sec = 0] = String(wait || '').split(':').map(Number).reverse().concat([0, 0, 0]).slice(0, 3).reverse();
+  const ms = ((h * 60 + m) * 60 + sec) * 1000;
+  hfQuotaUntil = Date.now() + (ms > 0 ? ms : 60 * 60 * 1000); // HF doesn't always say when – try again in an hour
+  saveFreeLimits();
+}
+
+// kept with the models' health, so a restart doesn't forget a used-up allowance
+function saveFreeLimits() {
+  freeHealth._limits = { hf: hfQuotaUntil, cf: cfQuotaUntil };
+  saveFreeHealth();
+}
+
+function notePollen(balance) {
+  pollenBalance = balance;
+  pollenCheckedAt = Date.now();
+}
+
+// the pollen left, asked again every 15 minutes (in the background)
+function checkPollen() {
+  if (!config.pollinationsKey || Date.now() - pollenCheckedAt < 15 * 60 * 1000) return;
+  pollenCheckedAt = Date.now();
+  httpRequest('GET', `${POLLINATIONS_BASE}/account/balance`, { headers: { Authorization: `Bearer ${config.pollinationsKey}` }, timeoutMs: 15000 })
+    .then(res => { if (res.status === 200 && Number.isFinite(res.json?.balance)) pollenBalance = res.json.balance; })
+    .catch(() => {});
+}
+
+function pollinationsUp() {
+  if (!config.pollinationsKey || Date.now() < pollinationsPausedUntil) return false;
+  const balance = pollenBalance ?? config.pollinationsInfo?.balance;
+  return !(Number.isFinite(balance) && balance <= 0);
+}
+
+function freeRoutesNow() {
+  return {
+    pollinations: pollinationsUp(),
+    cloudflare: hasCloudflare() && Date.now() > cfQuotaUntil,
+    huggingface: Date.now() > hfQuotaUntil,
+  };
+}
+
+// Paid Gemini models are always available; a free model needs one of its places to be up.
+function availableNow(m, r = freeRoutesNow()) {
+  if (m.provider === 'gemini') return true;
+  if (m.auto) return r.pollinations || r.cloudflare || r.huggingface;
+  const e = m.found;
+  if (e) return e.provider === 'pollinations' ? r.pollinations || (e.kind === 'code' && r.cloudflare) : e.provider === 'cloudflare' ? r.cloudflare : r.huggingface;
+  if (m.hfOnly || m.provider === 'huggingface') return r.huggingface;
+  if (m.provider === 'pollinations' && !m.open) return r.pollinations || r.cloudflare; // the AI coders: Cloudflare takes over
+  return r.pollinations || r.cloudflare || r.huggingface; // the built-in open image models try all three
+}
+
+// Why free models are hidden, for the note in the menus.
+function freeStatusNow() {
+  checkPollen();
+  const r = freeRoutesNow();
+  return {
+    huggingface: { ok: r.huggingface, until: r.huggingface ? null : new Date(hfQuotaUntil).toISOString() },
+    pollinations: { ok: r.pollinations, reason: r.pollinations ? null : !config.pollinationsKey ? 'no key' : 'no pollen' },
+    cloudflare: { ok: r.cloudflare, reason: r.cloudflare ? null : !hasCloudflare() ? 'not connected' : 'used up today', until: hasCloudflare() && !r.cloudflare ? new Date(cfQuotaUntil).toISOString() : null },
+  };
+}
+
+async function loadFreeModels() {
+  try {
+    const c = JSON.parse(await fsp.readFile(FREE_MODELS_FILE, 'utf8'));
+    if (c?.version === FreeModels.VERSION && FreeModels.KINDS.every(k => Array.isArray(c[k]))) freeCatalog = c;
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.warn('Couldn’t read the list of free models:', err.message);
+  }
+  await loadFreeHealth();
+}
+
+// A new search when the list is missing or older than a day – in the background, a little after the start.
+function scheduleFreeModels() {
+  if (process.env.FREE_MODELS_AUTO === '0') return;
+  const check = () => {
+    const age = freeCatalog ? Date.now() - Date.parse(freeCatalog.updatedAt) : Infinity;
+    if (!(age < FREE_MODELS_MAX_AGE_MS)) refreshFreeModels();
+  };
+  setTimeout(check, 15000).unref();
+  setInterval(check, 60 * 60 * 1000).unref();
+}
+
+// Searches again (one search at a time). A failed search keeps the old list.
+function refreshFreeModels({ wait = false } = {}) {
+  if (!freeSearch) {
+    freeSearch = (async () => {
+      try {
+        const c = await FreeModels.discover({ hfToken: config.hfToken || '', cloudflare: hasCloudflare() ? config.cloudflare : null });
+        await fsp.mkdir(DATA_DIR, { recursive: true });
+        await writeFileSafe(FREE_MODELS_FILE, JSON.stringify(c, null, 1));
+        freeCatalog = c;
+        freeSearchError = null;
+        modelCache = null;
+        console.log(`  ✓ Free models found: ${c.counts.image} image, ${c.counts.video} video, ${c.counts.code} code`);
+        if (process.env.FREE_MODELS_TEST === '1') testNewFreeModels();
+      } catch (err) {
+        freeSearchError = err.message;
+        console.log(`  ! Free models: ${err.message}`);
+      } finally {
+        freeSearch = null;
+      }
+    })();
+  }
+  const run = freeSearch;
+  return wait ? run.then(() => freeModelsStatus()) : Promise.resolve(freeModelsStatus());
+}
+
+// The app's own model for a found entry, when it has one built in (with its own routing and backups).
+function builtInFor(e) {
+  const builtInHost = host => Object.values(HF_SPACES).some(s => !s.found && s.host === host);
+  if (e.kind === 'image') {
+    if (e.provider === 'pollinations') return OPEN_MODELS.find(m => m.apiModel === e.apiModel) || null;
+    return OPEN_MODELS.find(m => HF_SPACES[HF_IMAGE_SPACE[m.id]]?.host === e.host) || null;
+  }
+  if (e.kind === 'video') return e.provider === 'huggingface' && builtInHost(e.host) ? VIDEO_MODELS.find(m => m.free) : null;
+  if (e.kind === 'code') return CODER_MODELS.find(m => m.id === e.apiModel) || (e.provider === 'cloudflare' && e.apiModel === CF_CODER ? CODER_MODELS[0] : null);
+  return null;
+}
+
+function freeImageModels() {
+  return (freeCatalog?.image || []).filter(e => ['huggingface', 'pollinations'].includes(e.provider) && !builtInFor(e) && freeState(e) !== 'broken').map(e => ({
+    id: e.id,
+    label: e.label,
+    provider: e.provider,
+    open: true,
+    group: 'found',
+    tag: 'Found free',
+    free: true,
+    found: e,
+    state: e.provider === 'huggingface' ? freeState(e) : 'pollen',
+    where: FreeModels.whereLabel(e),
+    desc: `${e.model} (${e.licenseNote || e.license}), found by the free-model search. ${e.provider === 'pollinations'
+      ? 'Runs on Pollinations and needs pollen.'
+      : `Runs free on Hugging Face in ${e.space}${e.alternates?.length ? ` (backup: ${e.alternates.map(a => a.space).join(', ')})` : ''} and uses the daily free GPU time.`} Text only – no references.`,
+    refs: false,
+    refsHint: 'no references – text only',
+    ratios: RATIOS_STD,
+    sizes: [],
+    thinking: null,
+    price: null,
+    nodes: false,
+  })).sort((a, b) => (a.state === 'works' ? 0 : 1) - (b.state === 'works' ? 0 : 1));
+}
+
+function freeModelMeta(id) {
+  if (id === FREE_AUTO_MODEL.id) return FREE_AUTO_MODEL;
+  return freeImageModels().find(m => m.id === id) || null;
+}
+
+async function freeGenerate(meta, prompt, refs, aspectRatio) {
+  prompt = plainPrompt(prompt); // the open models read prose – a node graph's XML/JSON/Markdown copy only adds noise
+  if (meta.auto) return freeAutoGenerate(prompt, refs, aspectRatio);
+  if (!meta.found) return openGenerate(meta, prompt, refs, aspectRatio);
+  if (refs.length) throw httpError(400, `${meta.label} can’t use reference images – pick FLUX.2 klein or a Gemini model.`);
+  const e = meta.found;
+  if (e.provider === 'pollinations') return pollinationsGenerate({ ...meta, apiModel: e.apiModel }, plainPrompt(prompt), [], aspectRatio);
+  const { key, plan, out } = await foundRun(e, 'image', { prompt: plainPrompt(prompt), aspectRatio: aspectRatio || '1:1' });
+  const img = await hfDownload(key, out?.[plan.outputIndex]);
+  const mimeType = /^image\//.test(img.mimeType) ? img.mimeType : sniffMime(img.data);
+  return { images: [{ mimeType, data: img.data.toString('base64') }], text: '', usageMetadata: null, via: 'huggingface' };
+}
+
+// Calls a found Hugging Face app; when it's down or has changed, its backup apps take over.
+async function foundRun(e, kind, input, { signal, onProgress } = {}) {
+  const places = [{ space: e.space, host: e.host }, ...(e.alternates || [])];
+  let last;
+  for (const [i, place] of places.entries()) {
+    const key = `found:${place.host}`;
+    HF_SPACES[key] ||= { repo: place.space, host: place.host, api: e.api, title: e.label, found: true };
+    const s = HF_SPACES[key];
+    try {
+      const info = await hfApiInfo(s);
+      // the app is read again each time, so a changed app is still called the right way
+      let plan = FreeModels.analyzeSpace(info, info, kind);
+      if (!plan) throw httpError(502, `The free ${e.label} app on Hugging Face has changed – search for free models again in Settings.`, { code: 'hf_api' });
+      // a video app with a separate function for a first frame
+      if (input.image && plan.input === 'text' && plan.imageApi) plan = FreeModels.analyzeSpace(info, info, kind, plan.imageApi) || plan;
+      s.api = plan.api;
+      const out = await hfRun(key, FreeModels.fillValues(plan, input), signal, onProgress);
+      noteFree(e, null);
+      return { key, plan, out };
+    } catch (err) {
+      last = err;
+      // the free GPU time is the same in every app – only an app that's down or changed has a backup worth trying
+      if (i === places.length - 1 || !['hf_unavailable', 'hf_api', 'hf_busy', 'network'].includes(err.info?.code)) break;
+      console.log(`  ! ${place.space}: ${err.info?.message || err.message} → ${places[i + 1].space}`);
+    }
+  }
+  noteFree(e, last);
+  throw last;
+}
+
+// ── Does each found model really work? Learnt from every run (and a small test of each new image model). ──
+const FREE_HEALTH_FILE = path.join(DATA_DIR, 'free-models-health.json');
+const FREE_BROKEN_CODES = new Set(['hf_api', 'hf_run', 'hf_unavailable']); // not: used-up GPU time, a busy GPU, the network
+const FREE_BROKEN_DAYS = 3; // a broken model gets another chance after this
+let freeHealth = {};
+let freeHealthSave = null;
+let freeTesting = false;
+
+async function loadFreeHealth() {
+  try { freeHealth = JSON.parse(await fsp.readFile(FREE_HEALTH_FILE, 'utf8')) || {}; } catch { freeHealth = {}; }
+  hfQuotaUntil = Number(freeHealth._limits?.hf) || 0;
+  cfQuotaUntil = Number(freeHealth._limits?.cf) || 0;
+}
+
+function noteFree(e, err) {
+  const h = freeHealth[e.id] ||= { strikes: 0 };
+  if (!err) Object.assign(h, { ok: new Date().toISOString(), strikes: 0, error: undefined });
+  else if (FREE_BROKEN_CODES.has(err.info?.code)) Object.assign(h, { fail: new Date().toISOString(), strikes: (h.strikes || 0) + 1, error: String(err.info?.message || err.message).slice(0, 200) });
+  else return;
+  saveFreeHealth();
+}
+
+function saveFreeHealth() {
+  clearTimeout(freeHealthSave);
+  freeHealthSave = setTimeout(() => writeFileSafe(FREE_HEALTH_FILE, JSON.stringify(freeHealth, null, 1)).catch(() => {}), 500);
+}
+
+// 'works' (made something), 'broken' (failed twice in a row lately – left out of the menus), 'untested'
+function freeState(e) {
+  const h = freeHealth[e.id];
+  if (!h) return 'untested';
+  if (h.strikes >= 2 && Date.now() - Date.parse(h.fail) < FREE_BROKEN_DAYS * 86400000) return 'broken';
+  return h.ok ? 'works' : 'untested';
+}
+
+// Test pictures of the new image models (only with FREE_MODELS_TEST=1): each run books 60–90 s of the shared free GPU
+// time – most of the 2 minutes a day without an account – so normally a model is judged by its first real picture.
+async function testNewFreeModels() {
+  if (freeTesting) return;
+  freeTesting = true;
+  try {
+    for (const m of freeImageModels().filter(x => x.found.provider === 'huggingface' && freeState(x.found) === 'untested').slice(0, 3)) {
+      try {
+        await foundRun(m.found, 'image', { prompt: 'A red apple on a wooden table, soft daylight', aspectRatio: '1:1', area: 512 * 512 });
+        console.log(`  ✓ Free model works: ${m.label}`);
+      } catch (err) {
+        console.log(`  ! Free model test – ${m.label}: ${String(err.info?.message || err.message).slice(0, 120)}`);
+        if (err.info?.code === 'hf_quota') break;
+      }
+    }
+  } finally {
+    freeTesting = false;
+  }
+}
+
+// Found video models, for the Video view: same call as the image ones, with the first frame and length when the app takes them.
+function freeVideoModels() {
+  return (freeCatalog?.video || []).filter(e => e.provider === 'huggingface' && !builtInFor(e) && freeState(e) !== 'broken').map(e => {
+    const d = e.duration;
+    const takesFrame = e.input !== 'text' || Boolean(e.imageApi);
+    return {
+      id: e.id,
+      label: `${e.label} (found)`,
+      provider: 'huggingface',
+      free: true,
+      found: e,
+      pricePerSecond: 0,
+      ratios: ['16:9', '9:16'],
+      resolutions: [e.width ? '480p' : 'app default'],
+      minSeconds: d ? Math.max(1, Math.ceil(d.min)) : 2,
+      maxSeconds: d ? Math.max(1, Math.min(10, Math.floor(d.max))) : 5,
+      sound: false,
+      firstFrame: e.input === 'image' ? 'auto' : takesFrame ? 'optional' : false,
+      lastFrame: false,
+      refs: false,
+      nodes: false,
+      desc: `${e.model} (${e.licenseNote || e.license}), found by the free-model search. Runs free on Hugging Face in ${e.space} and uses the daily free GPU time.${d ? '' : ' The app decides the length.'}`,
+    };
+  });
+}
+const videoModels = () => [...VIDEO_MODELS, ...freeVideoModels()];
+const publicVideoModels = () => { const r = freeRoutesNow(); return videoModels().map(m => ({ ...m, availableNow: availableNow(m, r) })).map(({ found, ...m }) => m); };
+
+// “Best free (auto)”: the best free models one after another, until one makes the image.
+async function freeAutoGenerate(prompt, refs, aspectRatio) {
+  const ranked = [];
+  const add = m => { if (m && !ranked.includes(m)) ranked.push(m); };
+  if (refs.length) add(OPEN_MODELS.find(m => m.refs));
+  else {
+    const found = freeImageModels();
+    for (const e of freeCatalog?.image || []) add(builtInFor(e) || found.find(m => m.id === e.id));
+    OPEN_MODELS.forEach(add);
+    ranked.sort((a, b) => (a.found && freeState(a.found) === 'untested' ? 1 : 0) - (b.found && freeState(b.found) === 'untested' ? 1 : 0));
+  }
+  let last = null;
+  let quota = !freeRoutesNow().huggingface;
+  let tries = 0;
+  for (const m of ranked) {
+    if (tries >= 5) break;
+    if (m.found?.provider === 'pollinations' && !pollinationsUp()) continue;
+    // once the free GPU time is used up, only models that can run elsewhere (Pollinations, Cloudflare) are worth a try
+    if (quota && (m.hfOnly || m.found?.zeroGpu || (!m.found && !pollinationsUp() && !hasCloudflare()))) continue;
+    tries++;
+    try {
+      return { ...(await freeGenerate(m, prompt, refs, aspectRatio)), model: m.id };
+    } catch (err) {
+      last = err;
+      if (err.info?.code === 'hf_quota') quota = true;
+      console.log(`  ! Best free: ${m.label} – ${String(err.info?.message || err.message).slice(0, 120)}`);
+    }
+  }
+  throw last || httpError(503, 'No free model is available right now – try again later.', { code: 'server', retryable: true });
+}
+
+// The AI coders for effects and SVG: the built-in ones, then the found ones (svg: also the SVG-only models).
+function coderModels({ svg = false } = {}) {
+  const found = (freeCatalog?.code || [])
+    .filter(e => (e.role === 'coder' || (svg && e.role === 'svg')) && !builtInFor(e) && (e.provider !== 'cloudflare' || hasCloudflare()) && freeState(e) !== 'broken')
+    .map(e => ({
+      id: e.id,
+      label: e.label,
+      provider: e.provider,
+      found: e,
+      svgOnly: e.role === 'svg',
+      note: e.role === 'svg' ? 'found · open source · SVG only · free GPU time'
+        : e.provider === 'cloudflare' ? 'found · open source · Cloudflare (free)'
+        : 'found · open source · needs pollen',
+    }));
+  return [...CODER_MODELS, ...found];
+}
+const publicCoders = list => { const r = freeRoutesNow(); return list.map(m => ({ ...m, availableNow: availableNow(m, r) })).map(({ found, ...m }) => m); };
+
+function runCoder(model, system, user, opts = {}) {
+  if (model.provider === 'gemini') return coderGemini(model, system, user, opts);
+  if (model.provider === 'cloudflare') {
+    if (!hasCloudflare()) throw httpError(400, 'Connect Cloudflare in Settings first.', { code: 'cloudflare_key' });
+    return cloudflareChat(system, user, opts.maxTokens || 8000, model.found.apiModel);
+  }
+  return coderPollinations(model.found ? { ...model, id: model.found.apiModel } : model, system, user, opts);
+}
+
+// An SVG-only model on Hugging Face: the description in, SVG code out.
+async function foundSvg(e, prompt) {
+  const { key, plan, out } = await foundRun(e, 'code', { prompt });
+  const v = out?.[plan.outputIndex];
+  if (typeof v === 'string') return v;
+  if (v?.url || v?.path) return (await hfDownload(key, v)).data.toString('utf8');
+  return '';
+}
+
+function freeModelsStatus() {
+  const c = freeCatalog;
+  const inMenus = new Set([...freeImageModels(), ...freeVideoModels(), ...coderModels({ svg: true })].map(m => m.id));
+  const row = e => ({
+    id: e.id,
+    rank: e.rank,
+    label: e.label,
+    model: e.model,
+    license: e.license,
+    licenseNote: e.licenseNote || null,
+    where: FreeModels.whereLabel(e),
+    url: e.space ? `https://huggingface.co/spaces/${e.space}` : `https://huggingface.co/${e.model}`,
+    role: e.role || null,
+    comfy: Boolean(e.comfy),
+    nodes: Boolean(e.nodes),
+    state: e.provider === 'huggingface' ? freeState(e) : null,
+    error: e.provider === 'huggingface' && freeState(e) === 'broken' ? freeHealth[e.id]?.error || null : null,
+    use: inMenus.has(e.id) ? 'menu' : builtInFor(e) ? 'built-in' : e.kind === 'code' && e.provider === 'cloudflare' ? 'connect' : 'list',
+  });
+  return {
+    updatedAt: c?.updatedAt || null,
+    searching: Boolean(freeSearch),
+    testing: freeTesting,
+    error: freeSearchError,
+    groups: Object.fromEntries(FreeModels.KINDS.map(k => [k, (c?.[k] || []).map(row)])),
+  };
+}
 
 function videoModel(id) {
   if (id) {
-    const m = VIDEO_MODELS.find(x => x.id === id);
+    const m = videoModels().find(x => x.id === id);
     if (!m) throw httpError(400, `Unknown video model “${id}”.`);
     return m;
   }
@@ -2747,6 +3186,7 @@ function videoModel(id) {
 }
 
 async function startFreeVideoJob(model, { body, prompt, userPrompt, nodes, aspectRatio, first, last }) {
+  if (!model.firstFrame) first = last = null; // a found app that works from text only
   const duration = clamp(Math.round((Number(body.duration) || 4) * 10) / 10, model.minSeconds, model.maxSeconds);
   const now = new Date();
   const job = {
@@ -2781,7 +3221,8 @@ async function runFreeVideoJob(job, first, last) {
   const signal = controller.signal;
   const { prompt, duration } = job;
   try {
-    const model = VIDEO_MODELS.find(m => m.id === job.model);
+    const model = videoModels().find(m => m.id === job.model);
+    if (!model) throw httpError(400, 'This free video model is no longer in the list – pick another one.', { code: 'bad_request' });
     if (!first && model.firstFrame === 'auto') {
       job.stage = 'Drawing the first frame (FLUX.1 schnell)…';
       first = await hfFirstFrame(job, signal);
@@ -2790,6 +3231,19 @@ async function runFreeVideoJob(job, first, last) {
       job.autoFirstFrame = true;
     }
     job.stage = 'Generating on Hugging Face’s free GPU…';
+    const progress = p => {
+      job.stage = p.started ? 'Generating on Hugging Face’s free GPU…'
+        : `In the queue on Hugging Face (position ${(p.rank ?? 0) + 1}${p.eta ? `, about ${Math.max(1, Math.round(p.eta))} s` : ''})…`;
+    };
+    // a model found by the free-model search: called the way its app describes itself
+    if (model.found) {
+      const run = await foundRun(model.found, 'video', { prompt, aspectRatio: job.aspectRatio, image: first, duration, area: 832 * 480 }, { signal, onProgress: progress });
+      job.stage = 'Downloading the clip…';
+      const clip = await hfDownload(run.key, run.out?.[run.plan.outputIndex]);
+      if (job.status !== 'running') return;
+      await saveVideoItem(job, clip.data, clip.mimeType, { cost: () => 0, via: 'huggingface' });
+      return;
+    }
     let key, values;
     if (job.model === 'wan-2.2') {
       [key, values] = last
@@ -3281,7 +3735,7 @@ const routes = [
   ['POST', /^\/api\/nodes\/templates$/, body => handleUserTemplateSave(body)],
   ['POST', /^\/api\/nodes\/templates\/delete$/, body => handleUserTemplateDelete(body)],
   ['POST', /^\/api\/refs\/from-items$/, body => handleRefsFromItems(body)],
-  ['GET', /^\/api\/video\/models$/, () => ({ models: VIDEO_MODELS })],
+  ['GET', /^\/api\/video\/models$/, () => ({ models: publicVideoModels(), freeStatus: freeStatusNow() })],
   ['POST', /^\/api\/video\/generate$/, body => handleVideoGenerate(body)],
   ['GET', /^\/api\/video\/jobs$/, () => handleVideoJobs()],
   ['GET', /^\/api\/video\/jobs\/([\w-]+)$/, (body, m) => handleVideoJob(m[1])],
@@ -3296,6 +3750,8 @@ const routes = [
   ['GET', /^\/api\/config$/, async () => { await Promise.race([refreshFx(), sleep(2500)]); return publicConfig(); }],
   ['POST', /^\/api\/config$/, body => handleConfig(body)],
   ['GET', /^\/api\/models$/, () => handleModels()],
+  ['GET', /^\/api\/free-models$/, () => freeModelsStatus()],
+  ['POST', /^\/api\/free-models\/refresh$/, () => refreshFreeModels({ wait: true })],
   ['GET', /^\/api\/history$/, () => ({ items: history.map(publicItem), drive: driveStatus() })],
   ['POST', /^\/api\/history\/delete$/, body => handleDelete(body)],
   ['PATCH', /^\/api\/history\/([\w-]+)$/, (body, m) => handlePatch(m[1], body)],
@@ -3358,14 +3814,26 @@ async function serveFile(req, res, baseDir, rel, cacheControl) {
   try { stat = file ? await fsp.stat(file) : null; } catch { /* doesn’t exist */ }
   if (!stat?.isFile()) return sendText(res, 404, 'Not found');
   const ext = path.extname(file).slice(1).toLowerCase();
+  const total = stat.size;
   const headers = {
     'Content-Type': MIME_BY_EXT[ext] || 'application/octet-stream',
-    'Content-Length': stat.size,
     'Cache-Control': cacheControl,
     'X-Content-Type-Options': 'nosniff',
+    'Accept-Ranges': 'bytes',
   };
   if (ext === 'html') headers['Content-Security-Policy'] = CSP;
-  res.writeHead(200, headers);
+  // Byte ranges so a <video> can seek/scrub a static file (e.g. the Effects sample video).
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+  if (range && (range[1] || range[2])) {
+    const start = range[1] === '' ? Math.max(0, total - Number(range[2])) : Number(range[1]);
+    const end = Math.min(total - 1, range[1] !== '' && range[2] !== '' ? Number(range[2]) : total - 1);
+    if (start >= total || end < start) { res.writeHead(416, { 'Content-Range': `bytes */${total}` }); res.end(); return; }
+    res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${total}`, 'Content-Length': end - start + 1 });
+    if (req.method === 'HEAD') { res.end(); return; }
+    fs.createReadStream(file, { start, end }).on('error', () => res.destroy()).pipe(res);
+    return;
+  }
+  res.writeHead(200, { ...headers, 'Content-Length': total });
   if (req.method === 'HEAD') {
     res.end();
     return;
@@ -3421,6 +3889,22 @@ async function serveMedia(req, res, id, download) {
   res.end(req.method === 'HEAD' ? undefined : entry.buffer);
 }
 
+// The connected onestoapp site may READ the gallery to pick an image (the images bridge): only
+// GET /api/history and GET /media/* — never the money-spending POSTs. The user's own machine
+// (a local onestoapp dev server) is allowed automatically; a deployed site's address is set in
+// Settings (config.connectOrigin).
+function connectAllowed(origin) {
+  if (!origin) return false;
+  if (config.connectOrigin && origin === config.connectOrigin) return true;
+  try {
+    const u = new URL(origin);
+    return ['http:', 'https:'].includes(u.protocol) && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
+  } catch {
+    return false;
+  }
+}
+const isConnectReadPath = pathname => pathname === '/api/history' || /^\/media\/[\w-]+$/.test(pathname);
+
 async function handleRequest(req, res, port) {
   // Protection against DNS rebinding and other websites: only our own origin is allowed.
   const allowed = [`127.0.0.1:${port}`, `localhost:${port}`];
@@ -3428,10 +3912,34 @@ async function handleRequest(req, res, port) {
   if (!allowed.includes(host)) return sendJson(res, 403, { error: { message: 'Host not allowed.' } });
   const url = new URL(req.url, `http://${host}`);
   const { pathname } = url;
+  const reqOrigin = req.headers.origin;
+  const connectRead = connectAllowed(reqOrigin) && isConnectReadPath(pathname);
+
+  // CORS preflight from the connected site, including Chrome's Private Network Access check that
+  // fires when a page calls a local address. Answered only for the two readable GET endpoints.
+  if (req.method === 'OPTIONS' && connectRead) {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': reqOrigin,
+      'Vary': 'Origin',
+      'Access-Control-Allow-Methods': 'GET',
+      'Access-Control-Allow-Headers': req.headers['access-control-request-headers'] || '*',
+      'Access-Control-Allow-Private-Network': 'true',
+      'Access-Control-Max-Age': '600',
+    });
+    res.end();
+    return;
+  }
 
   if (pathname.startsWith('/api/')) {
     const origin = req.headers.origin;
-    if (origin && !allowed.some(h => origin === `http://${h}`)) return sendJson(res, 403, { error: { message: 'Origin not allowed.' } });
+    // Foreign origins are refused, except the connected site reading the gallery list.
+    if (origin && !allowed.some(h => origin === `http://${h}`) && !(connectRead && req.method === 'GET')) {
+      return sendJson(res, 403, { error: { message: 'Origin not allowed.' } });
+    }
+    if (connectRead) {
+      res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+      res.setHeader('Vary', 'Origin');
+    }
     const route = routes.find(([method, re]) => method === req.method && re.test(pathname));
     if (!route) return sendJson(res, 404, { error: { message: 'Unknown endpoint.' } });
     try {
@@ -3457,7 +3965,10 @@ async function handleRequest(req, res, port) {
   if (pathname === '/oauth/start') return oauthStart(res);
   if (pathname === '/oauth/callback') return oauthCallback(url, res);
   const media = pathname.match(/^\/media\/([\w-]+)$/);
-  if (media) return serveMedia(req, res, media[1], url.searchParams.has('download'));
+  if (media) {
+    if (connectRead) { res.setHeader('Access-Control-Allow-Origin', reqOrigin); res.setHeader('Vary', 'Origin'); }
+    return serveMedia(req, res, media[1], url.searchParams.has('download'));
+  }
   if (pathname.startsWith('/thumbs/')) return serveFile(req, res, THUMBS_DIR, pathname.slice('/thumbs/'.length), 'private, max-age=31536000, immutable');
   if (pathname.startsWith('/refs/')) return serveFile(req, res, REFS_DIR, pathname.slice('/refs/'.length), 'private, max-age=31536000, immutable');
   return serveFile(req, res, PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname, 'no-cache');
@@ -3500,6 +4011,7 @@ async function main() {
 
   await loadHistory();
   await loadVideoJobs();
+  await loadFreeModels();
   await migrateLegacyOutput();
   let port = BASE_PORT;
   for (;; port++) {
@@ -3529,6 +4041,7 @@ async function main() {
 
   scheduleUploads();
   setInterval(() => { if (history.some(i => i.pending)) scheduleUploads(); }, 60000).unref();
+  scheduleFreeModels();
 }
 
 process.on('SIGINT', () => historyWrites.finally(() => process.exit(0)));

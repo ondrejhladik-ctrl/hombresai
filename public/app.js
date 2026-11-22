@@ -413,6 +413,7 @@ async function loadModels() {
   try {
     const res = await api('/api/models');
     state.models = res.models;
+    state.freeStatus = res.freeStatus || null;
     state.modelsSource = res.source;
     if (res.warning) toast(`Couldn’t load the model list from Google (${res.warning}). Using the default list.`, 'error', { duration: 8000 });
   } catch (err) {
@@ -506,6 +507,7 @@ function bindEvents() {
   });
   $('#cfRemove').addEventListener('click', removeCloudflare);
   $('#hfSave').addEventListener('click', saveHfToken);
+  $('#freeRefresh').addEventListener('click', searchFreeModels);
   $('#hfTokenInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); saveHfToken(); }
   });
@@ -569,19 +571,86 @@ function selectModel(id) {
 }
 
 
+// the free models found online: the first few are shown, the rest behind “Show more”
+const FOUND_SHOWN = 5;
+const FOUND_TAGS = { works: 'Works ✓', untested: 'New', pollen: 'Needs pollen' };
+const FOUND_NOTES = {
+  works: 'Tested – it has already made a picture on this computer.',
+  untested: 'Not tried yet – your first picture with it shows whether it works (if it fails twice, it’s hidden for a few days).',
+  pollen: 'Runs on Pollinations and needs pollen on your account.',
+};
+let showAllFound = false;
+
+const FREE_LIMIT_CODES = new Set(['hf_quota', 'pollinations_balance', 'cloudflare_quota']);
+const clock = iso => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+function freeHiddenText(f, n) {
+  const why = [];
+  if (!f.huggingface?.ok) why.push(`Hugging Face’s free GPU time is used up (back about ${clock(f.huggingface.until)})`);
+  if (!f.pollinations?.ok) why.push(f.pollinations.reason === 'no key' ? 'Pollinations has no key' : 'Pollinations has no pollen');
+  if (!f.cloudflare?.ok) why.push(f.cloudflare.reason === 'not connected' ? 'Cloudflare isn’t connected' : `today’s Cloudflare allowance is used up (back ${clock(f.cloudflare.until)})`);
+  return `${n} free model${n === 1 ? ' is' : 's are'} hidden – they can’t run right now: ${why.join('; ')}. They come back by themselves.`;
+}
+
+// The menus follow what can run: after a used-up free place, every 2 minutes and when the window comes back.
+let freeSig = '';
+async function refreshFreeAvailability() {
+  try {
+    const [res, video] = await Promise.all([api('/api/models'), api('/api/video/models').catch(() => null)]);
+    const sig = JSON.stringify([res.freeStatus, res.models.map(m => [m.id, m.availableNow]), video?.models.map(m => [m.id, m.availableNow])]);
+    if (sig === freeSig) return;
+    freeSig = sig;
+    state.models = res.models;
+    state.freeStatus = res.freeStatus;
+    renderModels();
+    if (video) {
+      if (typeof nd !== 'undefined') nd.videoModels = video.models;
+      if (typeof vd !== 'undefined') { vd.models = video.models; if (vd.ready && typeof vdRenderSide === 'function') vdRenderSide(); }
+    }
+    if (typeof nd !== 'undefined' && nd.ready && nd.graph) ndRenderGraph();
+    if (typeof vx !== 'undefined' && vx.tab === 'generate' && typeof vxRenderSide === 'function') vxRenderSide();
+    api('/api/effects').then(r => {
+      if (typeof fxs !== 'undefined') fxs.coder = r.coder || fxs.coder;
+      if (typeof vx !== 'undefined') vx.coders = r.coder?.vectorModels || r.coder?.models || vx.coders;
+    }).catch(() => {});
+  } catch { /* the next check */ }
+}
+setInterval(refreshFreeAvailability, 2 * 60 * 1000);
+window.addEventListener('focus', () => refreshFreeAvailability());
+
 function renderModels() {
   const list = $('#modelList');
   if (!state.models.length) {
     list.replaceChildren(h('p', { class: 'muted small' }, 'Loading models…'));
     return;
   }
-  list.replaceChildren(...state.models.flatMap((m, i) => {
+  // only the models that can run right now (the chosen one always stays)
+  const visible = state.models.filter(m => m.availableNow !== false || m.id === state.ui.model);
+  const hiddenFree = state.models.length - visible.length;
+  const found = visible.filter(m => m.group === 'found');
+  const extra = found.length - FOUND_SHOWN;
+  const hidden = new Set(!showAllFound && extra > 0 ? found.slice(FOUND_SHOWN).map(m => m.id).filter(id => id !== state.ui.model) : []);
+  const lastFound = found.at(-1);
+  const moreBtn = () => h('button', { type: 'button', class: 'model-more', onclick: () => { showAllFound = !showAllFound; renderModels(); } },
+    showAllFound ? 'Show fewer' : `Show ${extra} more free models`);
+  const note = () => hiddenFree > 0 && state.freeStatus && h('div', { class: 'free-note' }, freeHiddenText(state.freeStatus, hiddenFree), ' ',
+    h('button', { type: 'button', class: 'model-group-link', onclick: () => openSettings() }, 'Settings'));
+  const anyFree = visible.some(m => ['open', 'found'].includes(m.group));
+  list.replaceChildren(...visible.flatMap((m, i) => {
+    if (hidden.has(m.id)) return m === lastFound ? [moreBtn()] : [];
     const selected = m.id === state.ui.model;
     const prices = m.price ? Object.values(m.price.image) : [];
-    const firstOpen = m.group === 'open' && state.models[i - 1]?.group !== 'open';
-    const tagClass = m.tag === 'Recommended' ? ' accent' : m.group === 'open' ? ' open' : '';
+    const firstOpen = m.group === 'open' && visible[i - 1]?.group !== 'open';
+    const firstFound = m.group === 'found' && visible[i - 1]?.group !== 'found';
+    const isFound = m.group === 'found';
+    const tag = isFound ? FOUND_TAGS[m.state] || 'Found' : m.tag;
+    const tagClass = m.tag === 'Recommended' ? ' accent' : isFound && m.state === 'works' ? ' works' : ['open', 'found'].includes(m.group) ? ' open' : '';
     return [
-      firstOpen && h('div', { class: 'model-group' }, 'Open source · via Pollinations'),
+      firstOpen && h('div', { class: 'model-group' }, 'Open source · free'),
+      (firstOpen || (firstFound && !visible.some(x => x.group === 'open'))) && note(),
+      firstFound && h('div', { class: 'model-group model-group-row', title: 'Found by the free-model search – it runs once a day' },
+        h('span', {}, `Found free online · ${found.length}`),
+        h('button', { type: 'button', class: 'model-group-link', onclick: () => openSettings() }, 'All free models')),
       h('button', {
         type: 'button',
         class: `model-card${selected ? ' selected' : ''}`,
@@ -591,14 +660,17 @@ function renderModels() {
       },
       h('span', { class: 'model-row' },
         h('span', { class: 'model-name' }, m.label),
-        m.tag && h('span', { class: `tag${tagClass}` }, m.tag),
-        h('span', { class: 'model-price', title: m.free ? 'Runs on Pollinations’ free daily credit' : priceNote() },
-          prices.length ? `from ${fmtPrice(Math.min(...prices))}` : m.free ? 'free tier' : '')),
+        tag && h('span', { class: `tag${tagClass}` }, tag),
+        h('span', { class: 'model-price', title: m.free ? 'Runs on free open-source services' : priceNote() },
+          prices.length ? `from ${fmtPrice(Math.min(...prices))}` : m.free ? (isFound || m.auto ? 'free' : 'free tier') : '')),
       selected && h('span', { class: 'model-desc' }, m.desc),
+      selected && isFound && FOUND_NOTES[m.state] && h('span', { class: `model-desc found-note ${m.state}` }, FOUND_NOTES[m.state]),
       selected && m.available === false && h('span', { class: 'model-warn' }, 'Your key doesn’t list this model – it may not work.'),
-      selected && m.keyMissing && h('span', { class: 'model-warn' }, 'Needs a free Pollinations API key – add it in Settings.')),
+      selected && m.keyMissing && h('span', { class: 'model-warn' }, 'Needs a free Pollinations API key – add it in Settings.'),
+      selected && m.availableNow === false && h('span', { class: 'model-warn' }, 'Can’t run right now – see the note above.')),
+      m === lastFound && extra > 0 && showAllFound && moreBtn(),
     ].filter(Boolean);
-  }));
+  }), ...(anyFree ? [] : [h('div', { class: 'model-group' }, 'Open source · free'), note()].filter(Boolean)));
   $('#modelSource').textContent = state.modelsSource === 'api' ? 'verified for your key' : '';
 }
 
@@ -693,7 +765,7 @@ function renderNodesField() {
     ...graphs.map(g => h('option', { value: g.id, selected: g === current }, `${g.name}${g.kind === 'video' ? ' (video graph)' : ''}`)));
   const info = createNodeCompile();
   const m = currentModel();
-  const open = m?.provider === 'pollinations';
+  const open = m?.provider === 'pollinations' || m?.free;
   $('#nodeChips').replaceChildren(...(info
     ? [
       ...info.compiled.chips.slice(0, 10).map(c => h('span', { class: 'pill' }, c)),
@@ -974,7 +1046,7 @@ function bindDragAndDrop() {
 
 // Gemini models need the Gemini key; the open-source ones always work (Hugging Face's free GPUs need no key).
 function ensureKey(model = currentModel()) {
-  if (model?.provider === 'pollinations') return true;
+  if (model?.provider === 'pollinations' || model?.free) return true;
   if (state.config?.hasKey) return true;
   openSettings('Add your Gemini API key first.');
   return false;
@@ -1086,6 +1158,7 @@ async function runJob(job) {
       job.status = 'error';
       job.error = info;
       updateJobTile(job);
+      if (FREE_LIMIT_CODES.has(info.code)) refreshFreeAvailability();
       if (FATAL_CODES.has(info.code)) handleFatal(info);
       return;
     }
@@ -1807,6 +1880,7 @@ function openSettings(message) {
   renderCloudflareStatus();
   $('#hfTokenInput').value = '';
   renderHfStatus();
+  loadFreeModels();
   renderMcpSetup();
   $('#settingsMsg').textContent = message || '';
   $('#settingsMsg').className = 'settings-msg';
@@ -2067,6 +2141,63 @@ async function removeCloudflare() {
 }
 
 // Hugging Face: the free open video models run on its shared GPUs – a token raises the daily GPU time from 2 to 5 minutes.
+// ── Free open-source models (Settings) ───────────────────────────────────────
+
+const FREE_GROUPS = [['image', 'Images'], ['video', 'Videos'], ['code', 'Code – effects and SVG']];
+const FREE_USE = { menu: 'in the menu', 'built-in': 'built in', connect: 'connect Cloudflare', list: 'listed only' };
+const FREE_STATE = { works: 'works ✓', untested: 'not tried yet', broken: 'broken – hidden' };
+
+async function loadFreeModels() {
+  try {
+    renderFreeModels(await api('/api/free-models'));
+  } catch (err) {
+    $('#freeStatus').replaceChildren(h('span', { class: 'warn' }, errorText(err)));
+  }
+}
+
+function renderFreeModels(f) {
+  const total = FREE_GROUPS.reduce((n, [k]) => n + (f.groups[k]?.length || 0), 0);
+  $('#freeStatus').replaceChildren(
+    f.searching ? h('span', {}, 'Searching…')
+      : f.testing ? h('span', {}, 'Trying out the new models…')
+      : f.updatedAt ? h('span', { class: 'ok' }, `✓ ${total} free models, searched ${relTime(f.updatedAt)}.`)
+      : h('span', { class: 'warn' }, 'Not searched yet – it runs a little after the app starts, or click Search now.'),
+    ...(f.error ? [h('span', { class: 'warn' }, ` The last search failed: ${f.error}`)] : []));
+  $('#freeRefresh').disabled = f.searching;
+  $('#freeLists').replaceChildren(...FREE_GROUPS.map(([kind, title]) => {
+    const rows = f.groups[kind] || [];
+    return h('details', { class: 'free-group', open: kind === 'image' },
+      h('summary', {}, `${title} (${rows.length})`),
+      rows.length ? h('ol', { class: 'free-list' }, ...rows.map(r => h('li', {},
+        h('a', { href: r.url, target: '_blank', rel: 'noopener noreferrer', title: r.model }, r.label),
+        h('span', { class: 'muted' }, ` · ${r.where} · ${r.licenseNote || r.license}${r.comfy ? ' · in ComfyUI' : ''}${r.role === 'svg' ? ' · SVG only' : ''}`),
+        h('span', { class: `free-use ${r.use}` }, FREE_USE[r.use] || r.use),
+        r.state && h('span', { class: `free-state ${r.state}`, title: r.error || '' }, FREE_STATE[r.state]))))
+        : h('p', { class: 'muted small' }, 'None found.'));
+  }));
+}
+
+async function searchFreeModels() {
+  const btn = $('#freeRefresh');
+  btn.disabled = true;
+  $('#freeStatus').replaceChildren(h('span', {}, 'Searching Hugging Face, Pollinations and Cloudflare… (about 10–60 s)'));
+  try {
+    const f = await api('/api/free-models/refresh', { body: {} });
+    renderFreeModels(f);
+    if (!f.error) {
+      notify('The free models are up to date – the new image models are being tried out now.', 'success');
+      setTimeout(loadFreeModels, 20000);
+      loadModels();
+      if (typeof fxs !== 'undefined') api('/api/effects').then(r => { fxs.coder = r.coder || fxs.coder; }).catch(() => {});
+      if (typeof vx !== 'undefined') api('/api/effects').then(r => { vx.coders = r.coder?.vectorModels || r.coder?.models || vx.coders; }).catch(() => {});
+    }
+  } catch (err) {
+    notifyError(err, 'Couldn’t search for free models');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function renderHfStatus() {
   const c = state.config.huggingface || {};
   $('#hfStatus').replaceChildren(c.hasToken
@@ -2115,9 +2246,26 @@ function applyRail() {
   btn.setAttribute('aria-expanded', String(!hidden));
 }
 
+// The view glides in with the intro's ease (styles.css – Motion); the class leaves once the wave has passed,
+// so later re-renders inside the view don't replay it.
+let lastView = null;
+function animateEnter(el) {
+  if (!el) return;
+  el.classList.remove('view-enter');
+  void el.offsetWidth; // restart the animation
+  el.classList.add('view-enter');
+  clearTimeout(el._enterTimer);
+  el._enterTimer = setTimeout(() => el.classList.remove('view-enter'), 900);
+}
+
 function setView(view) {
   state.ui.view = VIEWS.includes(view) ? view : 'create';
   saveUi();
+  if (state.ui.view !== lastView) {
+    lastView = state.ui.view;
+    animateEnter($(state.ui.view === 'create' ? '#createView' : `#${state.ui.view}View`));
+    if (state.ui.view === 'create') animateEnter($('#panel'));
+  }
   for (const v of VIEWS) document.body.classList.toggle(`view-${v}`, state.ui.view === v);
   for (const btn of document.querySelectorAll('.rail-btn')) {
     const active = btn.dataset.view === state.ui.view;

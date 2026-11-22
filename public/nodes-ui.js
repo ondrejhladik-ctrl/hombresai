@@ -65,6 +65,11 @@ async function ndInit() {
   }
   let saved = null;
   try { saved = localStorage.getItem(ND_STORE_GRAPH); } catch { /* fine */ }
+  api('/api/video/models').then(res => {
+    nd.videoModels = res.models || [];
+    if (typeof vd !== 'undefined' && !vd.models?.length) vd.models = nd.videoModels; // prices for the free ones
+    if (nd.graph?.nodes.some(n => n.type === 'generate_video')) ndRenderGraph();
+  }).catch(() => {});
   const graph = ndGraphById(saved) || nd.graphs[0];
   if (graph) ndOpen(graph);
   else ndFromTemplate(NodesCore.TEMPLATES[0].id, { quiet: true });
@@ -462,16 +467,24 @@ function ndField(node, f) {
   const wrap = (control, extra) => h('label', { class: `nd-field nd-f-${f.type}` }, h('span', { class: 'nd-flabel' }, f.label), control, extra);
   if (f.type === 'select' || f.type === 'model') {
     let options = f.options || [];
-    if (f.type === 'model') {
-      const models = (state.models || []).filter(m => m.provider !== undefined);
-      options = models.length ? models.map(m => {
-        const p = unitPrice(m, '1K');
-        return { value: m.id, label: `${m.label}${p != null ? ` – ≈ ${fmtPrice(p)}` : m.free ? ' – free' : ''}` };
-      }) : options;
-      // never show another model than the one the node will use (e.g. before the model list has loaded)
-      if (v && !options.some(op => String(op.value) === String(v))) options = [...options, { value: v, label: modelLabel(v) }];
+    // every model, the ones that read the node specification (XML, JSON) apart from those that get only the description
+    const isVideoModel = f.id === 'model' && node.type === 'generate_video';
+    const models = (f.type === 'model' ? (state.models || []).filter(m => m.provider !== undefined) : isVideoModel ? ndVideoModels() : [])
+      .filter(m => m.availableNow !== false || String(m.id) === String(v)); // only what can run right now
+    if (models.length) {
+      options = models.map(m => {
+        const p = f.type === 'model' ? unitPrice(m, '1K') : null;
+        return { value: m.id, spec: ndReadsSpec(m), label: `${m.label}${p != null ? ` – ≈ ${fmtPrice(p)}` : m.free ? ' – free' : ''}` };
+      });
     }
-    const sel = h('select', { class: 'fxe-select nd-input' }, ...options.map(op => h('option', { value: op.value, selected: String(op.value) === String(v) }, op.label)));
+    // never show another model than the one the node will use (e.g. before the model list has loaded)
+    if ((f.type === 'model' || isVideoModel) && v && !options.some(op => String(op.value) === String(v))) options = [...options, { value: v, label: modelLabel(v) }];
+    const opt = op => h('option', { value: op.value, selected: String(op.value) === String(v) }, op.label);
+    const grouped = options.some(op => op.spec === false)
+      ? [h('optgroup', { label: 'Read the whole node specification' }, ...options.filter(op => op.spec !== false).map(opt)),
+        h('optgroup', { label: 'Get only the description (no XML/JSON)' }, ...options.filter(op => op.spec === false).map(opt))]
+      : options.map(opt);
+    const sel = h('select', { class: 'fxe-select nd-input' }, ...grouped);
     sel.addEventListener('change', () => ndSetValue(node, f, sel.value));
     return wrap(sel);
   }
@@ -837,6 +850,23 @@ async function ndDeleteGraph() {
 
 // ── Running Generate nodes ──────────────────────────────────────────────────
 
+// Only Gemini models read the structured node specification; the open models get the prose description.
+function ndReadsSpec(m) {
+  return m.provider === 'gemini';
+}
+
+// the video models from the server (the free ones found online included), or the built-in list until they've loaded
+function ndVideoModels() {
+  const list = (typeof vd !== 'undefined' && vd.models?.length) ? vd.models : nd.videoModels || [];
+  return list.length ? list : NodesCore.VIDEO_MODELS.map(m => ({ ...m, provider: m.free ? 'huggingface' : 'gemini' }));
+}
+
+function ndModelGetsProse(node) {
+  const id = node.values.model;
+  const m = node.type === 'generate_video' ? ndVideoModels().find(x => x.id === id) : (state.models || []).find(x => x.id === id);
+  return Boolean(m) && !ndReadsSpec(m);
+}
+
 function ndResult(id) {
   if (!nd.results.has(id)) nd.results.set(id, { status: 'idle', items: [], error: null, done: 0, total: 0 });
   return nd.results.get(id);
@@ -860,6 +890,7 @@ function ndRunControls(node) {
     h('div', { class: 'nd-run-row' },
       h('button', { type: 'button', class: 'btn small primary', disabled: running, onclick: () => ndRun(node.id) }, icon('sparkle', 14), running ? `Running ${r.done}/${r.total}…` : t.output === 'video' ? 'Generate video' : 'Generate'),
       h('span', { class: 'nd-price' }, price)),
+    t.output && v.model && ndModelGetsProse(node) ? h('p', { class: 'nd-note' }, 'This model gets only the description – the XML/JSON specification is left out.') : null,
     r.error ? h('p', { class: 'nd-error' }, errorText(r.error)) : null,
     r.items.length ? h('div', { class: 'nd-results' }, ...r.items.slice(0, 8).map(item => {
       const video = /^video\//.test(item.mimeType || '');
@@ -931,6 +962,7 @@ async function ndRun(nodeId, depth = 0) {
     r.status = 'error';
     r.error = err;
     toastError(err, `“${t.title}” failed`);
+    if (FREE_LIMIT_CODES.has(err.info?.code)) refreshFreeAvailability();
   }
   ndRefreshRun(node);
 }
@@ -1020,7 +1052,7 @@ function ndRenderSide() {
         h('span', { class: 'muted small' }, `${(text || '').length.toLocaleString('en-GB')} characters`),
         h('span', { class: 'vx-bar-fill' }),
         h('button', { type: 'button', class: 'btn small', onclick: () => { navigator.clipboard?.writeText(text || '').then(() => toast('Copied.', 'success'), () => toast('Couldn’t copy.', 'error')); } }, icon('copy', 14), 'Copy')),
-      c.kind === 'image' && c.prompt.length > 2000 && h('p', { class: 'nd-warn' }, 'Open-source models (FLUX, Z-Image) read only about the first 2,000 characters – for them, attach fewer formats below.'),
+      (() => { const t = g.nodes.find(n => n.id === c.target); return t && t.values.model && ndModelGetsProse(t); })() && h('p', { class: 'nd-warn' }, 'The chosen model gets only the description and the prompt – the XML, JSON and Markdown parts aren’t sent to it. For the full specification pick a Gemini model.'),
       h('div', { class: 'nd-formats' },
         h('h3', {}, 'Attach to the prompt'),
         fmt('prose', 'Description (prose)'), fmt('xml', 'XML'), fmt('json', 'JSON'), fmt('markdown', 'Markdown')),

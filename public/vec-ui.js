@@ -133,7 +133,7 @@ function vxInit() {
   vxRenderSide();
   vxBindEvents();
   api('/api/effects').then(res => {
-    vx.coders = res.coder?.models || [];
+    vx.coders = res.coder?.vectorModels || res.coder?.models || [];
     if (vx.tab === 'generate') vxRenderSide();
   }).catch(() => { vx.coders = []; });
 }
@@ -1582,7 +1582,7 @@ function vxPanelGenerate() {
   const imageOptions = g.mode === 'image' && model && [
     h('label', { class: 'vx-lbl' }, 'Image model',
       (() => {
-        const sel = h('select', { class: 'fxe-select' }, ...models.map(m => {
+        const sel = h('select', { class: 'fxe-select' }, ...models.filter(m => m.availableNow !== false || m.id === model.id).map(m => {
           const p = unitPrice(m, '1K');
           return h('option', { value: m.id, selected: m.id === model.id }, `${m.label} – ${p != null ? `≈ ${fmtPrice(p)}` : m.free ? 'free tier' : ''}`);
         }));
@@ -1600,7 +1600,7 @@ function vxPanelGenerate() {
   const svgOptions = g.mode === 'svg' && [
     h('label', { class: 'vx-lbl' }, 'AI model',
       (() => {
-        const sel = h('select', { class: 'fxe-select' }, ...(coders.length ? coders : [{ id: '', label: 'Loading…', note: '' }]).map(c => h('option', { value: c.id, selected: c.id === coder?.id }, `${c.label} – ${c.note}`)));
+        const sel = h('select', { class: 'fxe-select' }, ...(coders.length ? coders.filter(c => c.availableNow !== false || c.id === coder?.id) : [{ id: '', label: 'Loading…', note: '' }]).map(c => h('option', { value: c.id, selected: c.id === coder?.id }, `${c.label} – ${c.note}`)));
         sel.addEventListener('change', () => { g.coder = sel.value; });
         return sel;
       })()),

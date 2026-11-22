@@ -55,7 +55,15 @@ const fxs = {
   exportAudio: true,
   aiMode: 'new',
   wasPlaying: false,
+  keyframes: [],        // video timeline: [{ id, time, snap }] sorted by time; each is a hard-switch look
+  activeKf: null,       // keyframe shown in the editor / applied live
+  appliedKf: null,      // keyframe currently loaded into the live look (apply only when it changes)
+  sourceFormat: null,   // the imported file's format, so export matches it
+  openMenu: false,
 };
+
+// The video shown by default, so Effects always has something to work on (bundled in public/samples/).
+const FX_SAMPLE_VIDEO = '/samples/sample.mp4';
 
 const fxActive = () => fxs.inited && Boolean(fxs.engine) && state.ui.view === 'effects' && !document.hidden;
 
@@ -151,12 +159,17 @@ function fxConsumePending() {
 }
 
 function fxBindEvents() {
-  $('#fxeOpenBtn').addEventListener('click', () => $('#fxeFileInput').click());
+  $('#fxeOpenBtn').addEventListener('click', e => { e.stopPropagation(); fxToggleOpenMenu(); });
+  $('#fxeOpenFile').addEventListener('click', () => { fxCloseOpenMenu(); $('#fxeFileInput').click(); });
+  document.addEventListener('click', e => { if (fxs.openMenu && !$('#fxeOpen')?.contains(e.target)) fxCloseOpenMenu(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && fxs.openMenu) fxCloseOpenMenu(); });
   $('#fxeFileInput').addEventListener('change', e => {
     const file = e.target.files[0];
     if (file) fxLoadFile(file);
     e.target.value = '';
   });
+  $('#fxeAddKey').addEventListener('click', fxAddKeyframe);
+  $('#fxeDelKey').addEventListener('click', fxDeleteActiveKeyframe);
   $('#fxeCameraBtn').addEventListener('click', fxToggleCamera);
   $('#fxeNewBtn').addEventListener('click', () => fxOpenAi('new'));
   $('#fxeSearch').addEventListener('input', e => { fxs.query = e.target.value; fxRenderCards(); });
@@ -286,6 +299,7 @@ function fxMakeLayer(key, params = null, enabled = true, id = uid()) {
 
 function fxLayersChanged() {
   fxPersist();
+  fxSyncActiveKeyframe();
   fxRenderInspector();
   fxRequestRender();
 }
@@ -480,16 +494,18 @@ function fxKMeans(data, k) {
   return colors;
 }
 
-function fxSelect(key, { keep = false, restore = false } = {}) {
+function fxSelect(key, { keep = false, restore = false, snap = null } = {}) {
   const card = fxs.cards.find(c => c.key === key) || fxs.cards[0];
   if (!card || !fxs.engine) return;
   const effect = fxs.effects.get(card.effectId);
   const saved = restore && state.ui.fx?.key === card.key ? state.ui.fx : null;
   const params = fxDefaultParams(effect, card.preset);
-  if (saved?.params) Object.assign(params, fxCoerceParams(effect, saved.params));
+  if (snap?.params) Object.assign(params, fxCoerceParams(effect, snap.params));
+  else if (saved?.params) Object.assign(params, fxCoerceParams(effect, saved.params));
   else if (keep && fxs.current) Object.assign(params, fxCoerceParams(effect, fxs.params));
   fxs.params = params;
-  if (saved?.look) fxs.look = fxCleanLook(saved.look);
+  if (snap?.look) fxs.look = fxCleanLook(snap.look);
+  else if (saved?.look) fxs.look = fxCleanLook(saved.look);
   else if (!keep || !fxs.look) fxs.look = fxDefaultLook(effect, card.preset);
   const program = fxs.engine.compile(effect.source);
   fxs.current = {
@@ -509,6 +525,7 @@ function fxSelect(key, { keep = false, restore = false } = {}) {
   }
   if (!program.ok && !keep) toast(`“${card.name}” has an error in its code – open Code to see it.`, 'error');
   fxPersist();
+  if (!snap) fxSyncActiveKeyframe(); // a gallery pick updates the keyframe being edited
   fxRenderInspector();
   fxMarkActiveCard();
   fxRequestRender();
@@ -538,6 +555,7 @@ function fxPersist() {
 
 function fxChanged() {
   fxPersist();
+  fxSyncActiveKeyframe();
   fxRequestRender();
 }
 
@@ -550,6 +568,7 @@ function fxRequestRender() {
 function fxFrame() {
   fxs.raf = 0;
   if (!fxActive() || fxs.busy?.ownsCanvas) return;
+  if (fxs.source?.kind === 'video') fxApplyTimeline(); // load the keyframe active at the playhead
   const view = fxViewSize();
   const done = fxDraw(fxs.recordSize || view);
   if (done === null && fxs.source && fxs.source.kind !== 'image') { fxRequestRender(); return; } // first frame not ready yet
@@ -763,11 +782,12 @@ function fxLoadItem(item) {
 }
 
 function fxLoadDefault() {
-  const item = state.items.find(i => i.model !== 'effects');
-  if (item) {
-    fxLoadItem(item);
-    return;
-  }
+  // Always start on the bundled sample video (so the timeline has something to animate).
+  fxLoadVideoUrl(FX_SAMPLE_VIDEO, 'Sample video', { fallback: true });
+}
+
+// When the sample video can't play, fall back to a gradient image so the view isn't empty.
+function fxLoadSampleImage() {
   const c = fxSampleCanvas();
   fxSetSource({ kind: 'image', el: c, name: 'Sample image', itemId: null, width: c.width, height: c.height });
 }
@@ -833,7 +853,7 @@ async function fxLoadImageUrl(url, name, itemId = null) {
   }
 }
 
-async function fxLoadVideoUrl(url, name) {
+async function fxLoadVideoUrl(url, name, { fallback = false } = {}) {
   const token = ++fxs.loadToken;
   fxSetLoading(true);
   const v = document.createElement('video');
@@ -850,12 +870,15 @@ async function fxLoadVideoUrl(url, name) {
     if (token !== fxs.loadToken) return;
     fxSetSource({ kind: 'video', el: v, name, itemId: null, width: v.videoWidth, height: v.videoHeight, url });
     for (const ev of ['timeupdate', 'play', 'pause', 'volumechange', 'durationchange']) v.addEventListener(ev, fxUpdateTransport);
+    v.addEventListener('durationchange', fxRenderTimeline);
     v.addEventListener('play', fxRequestRender);
     v.addEventListener('seeked', fxRequestRender);
     v.play().catch(() => {});
   } catch {
-    URL.revokeObjectURL(url);
-    if (token === fxs.loadToken) toast(`This video can’t be played in the browser (${name}). MP4 (H.264) and WebM work best.`, 'error', { duration: 8000 });
+    if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+    if (token !== fxs.loadToken) return;
+    if (fallback) fxLoadSampleImage();
+    else toast(`This video can’t be played in the browser (${name}). MP4 (H.264) and WebM work best.`, 'error', { duration: 8000 });
   } finally {
     if (token === fxs.loadToken) fxSetLoading(false);
   }
@@ -900,9 +923,12 @@ function fxSetSource(src) {
   fxs.engine.setSource(src.el);
   fxs.design = fxDesignSize(src.width, src.height);
   fxs.started = performance.now();
+  fxCloseOpenMenu();
+  fxSetSourceFormat(src);
   $('#fxeEmpty').hidden = true;
   $('#fxeCanvas').hidden = false;
   fxUpdateSourceUi();
+  fxResetKeyframes();
   fxRenderInspector();
   fxRenderStrip();
   fxQueueThumbs();
@@ -956,6 +982,152 @@ function fxUpdateTransport() {
 function fxClock(sec) {
   const s = Number.isFinite(sec) ? Math.max(0, sec) : 0;
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+}
+
+// ── Timeline: keyframes that hard-switch the whole look along a video ─────────
+// A keyframe snapshots the effect + its properties (layers, palette, adjust, finish). From its time
+// until the next keyframe, that look applies – live while playing and when exporting. Only videos
+// have a timeline; an image or the camera keeps the single current look.
+const fxHasTimeline = () => fxs.source?.kind === 'video';
+const fxVideoTime = () => (fxs.source?.kind === 'video' ? fxs.source.el.currentTime || 0 : 0);
+// Videos recorded by a browser (MediaRecorder MP4/WebM, incl. this app's own exports) often can't be
+// seeked – the container has no index. Then scrubbing / jumping is off; play→pause→+Key and export still work.
+function fxCanSeek() {
+  const v = fxs.source?.kind === 'video' ? fxs.source.el : null;
+  return Boolean(v && v.seekable && v.seekable.length && v.seekable.end(v.seekable.length - 1) > 0.5);
+}
+
+function fxSnapshot() {
+  return {
+    key: fxs.current?.key,
+    params: structuredClone(fxs.params || {}),
+    look: structuredClone(fxs.look || {}),
+    stack: fxs.stack.map(l => ({ key: l.key, params: structuredClone(l.params), enabled: l.enabled })),
+  };
+}
+
+// Load a snapshot into the live look (recompiles) – when crossing a keyframe or clicking one.
+function fxApplySnapshot(snap) {
+  if (!snap) return;
+  fxs.stack = (snap.stack || []).map(s => fxMakeLayer(s.key, s.params, s.enabled)).filter(Boolean).slice(0, 6);
+  fxs.editing = null;
+  fxSelect(snap.key || fxs.current?.key, { snap });
+}
+
+const fxSortKeyframes = () => fxs.keyframes.sort((a, b) => a.time - b.time);
+
+// The keyframe active at `time`: the last one at or before it (there is always one at 0).
+function fxKeyframeAt(time) {
+  let kf = fxs.keyframes[0] || null;
+  for (const k of fxs.keyframes) { if (k.time <= time + 0.02) kf = k; else break; }
+  return kf;
+}
+
+function fxResetKeyframes() {
+  fxs.keyframes = fxHasTimeline() ? [{ id: uid(), time: 0, snap: fxSnapshot() }] : [];
+  fxs.activeKf = fxs.keyframes[0]?.id || null;
+  fxs.appliedKf = fxs.activeKf;
+  fxRenderTimeline();
+}
+
+// Save the current look into the keyframe being edited (after a slider / layer / effect change).
+function fxSyncActiveKeyframe() {
+  if (!fxHasTimeline() || !fxs.activeKf) return;
+  const kf = fxs.keyframes.find(k => k.id === fxs.activeKf);
+  if (kf) kf.snap = fxSnapshot();
+}
+
+function fxAddKeyframe() {
+  if (!fxHasTimeline()) return;
+  const time = fxVideoTime();
+  const near = fxs.keyframes.find(k => Math.abs(k.time - time) < 0.08);
+  if (near) { near.snap = fxSnapshot(); fxs.activeKf = near.id; }
+  else { const kf = { id: uid(), time, snap: fxSnapshot() }; fxs.keyframes.push(kf); fxSortKeyframes(); fxs.activeKf = kf.id; }
+  fxs.appliedKf = fxs.activeKf;
+  fxRenderTimeline();
+  toast('Key added – change the effect here and it applies from this point.', 'success');
+}
+
+function fxDeleteActiveKeyframe() {
+  const kf = fxs.keyframes.find(k => k.id === fxs.activeKf);
+  if (!kf || fxs.keyframes.length <= 1 || kf.time <= 0.02) { toast('The first key can’t be removed.', 'error'); return; }
+  fxs.keyframes = fxs.keyframes.filter(k => k.id !== kf.id);
+  fxApplyTimeline(true);
+  fxRenderTimeline();
+}
+
+function fxSelectKeyframe(id) {
+  const kf = fxs.keyframes.find(k => k.id === id);
+  if (!kf) return;
+  fxs.activeKf = id;
+  fxs.appliedKf = id;
+  if (fxs.source?.kind === 'video' && fxCanSeek()) fxs.source.el.currentTime = kf.time; // jump only when the video supports it
+  fxApplySnapshot(kf.snap); // either way, load its look into the editor
+  fxRenderTimeline();
+}
+
+// Live / scrub / export: load the keyframe active at the current time, only when it changes.
+function fxApplyTimeline(force = false) {
+  if (!fxHasTimeline() || !fxs.keyframes.length) return;
+  const kf = fxKeyframeAt(fxVideoTime());
+  if (!kf) return;
+  if (force || kf.id !== fxs.appliedKf) {
+    fxs.appliedKf = kf.id;
+    fxs.activeKf = kf.id; // the editor follows the playhead
+    fxApplySnapshot(kf.snap);
+    fxRenderTimeline();
+  }
+}
+
+function fxRenderTimeline() {
+  const keys = $('#fxeTlKeys');
+  if (!keys) return;
+  const v = fxs.source?.kind === 'video' ? fxs.source.el : null;
+  const dur = v && Number.isFinite(v.duration) ? v.duration : 0;
+  keys.replaceChildren(...(fxHasTimeline() ? fxs.keyframes : []).map(k => h('button', {
+    type: 'button',
+    class: `fxe-key${k.id === fxs.activeKf ? ' active' : ''}`,
+    style: `left:${dur ? Math.min(100, Math.max(0, (k.time / dur) * 100)) : 0}%`,
+    title: `Key at ${fxClock(k.time)} – click to jump here`,
+    'aria-label': `Key at ${fxClock(k.time)}`,
+    onclick: () => fxSelectKeyframe(k.id),
+  })));
+  const info = $('#fxeTlInfo');
+  if (info) {
+    const n = fxs.keyframes.length;
+    const idx = fxs.keyframes.findIndex(k => k.id === fxs.activeKf);
+    const noScrub = fxHasTimeline() && !fxCanSeek() ? ' · can’t scrub this clip – play, pause, then add a key' : '';
+    info.textContent = !fxHasTimeline() ? ''
+      : (n > 1 ? `Key ${idx + 1} of ${n} · at ${fxClock(fxs.keyframes[idx]?.time || 0)}` : 'One look for the whole clip – add a key to change the effect over time') + noScrub;
+  }
+  if (fxHasTimeline()) $('#fxeSeek').disabled = !fxCanSeek();
+  const del = $('#fxeDelKey');
+  if (del) { const kf = fxs.keyframes.find(k => k.id === fxs.activeKf); del.hidden = !(fxHasTimeline() && fxs.keyframes.length > 1 && kf && kf.time > 0.02); }
+}
+
+// ── The "Open image or video" popover (holds "your images") ──────────────────
+function fxToggleOpenMenu(open) {
+  const menu = $('#fxeOpenMenu');
+  if (!menu) return;
+  fxs.openMenu = open === undefined ? !fxs.openMenu : open;
+  menu.hidden = !fxs.openMenu;
+  $('#fxeOpenBtn')?.setAttribute('aria-expanded', String(fxs.openMenu));
+  if (fxs.openMenu) fxRenderStrip();
+}
+const fxCloseOpenMenu = () => fxToggleOpenMenu(false);
+
+// Match the export format to the file just imported (image → its type; video → mp4 or webm).
+function fxSetSourceFormat(src) {
+  const name = (src.name || '').toLowerCase();
+  if (src.kind === 'image') {
+    const t = /\.png$/.test(name) ? 'png' : /\.jpe?g$/.test(name) ? 'jpeg' : /\.webp$/.test(name) ? 'webp' : null;
+    fxs.sourceFormat = t;
+    if (t && FX_FORMATS[t]) { fxs.exportFormat = t; fxPersist(); }
+  } else if (src.kind === 'video') {
+    fxs.sourceFormat = /\.webm$/.test(name) ? 'webm' : 'mp4';
+  } else {
+    fxs.sourceFormat = null;
+  }
 }
 
 // ── Inspector (right) ───────────────────────────────────────────────────────
@@ -1400,8 +1572,11 @@ async function fxExportImage(save) {
 
 function fxRecorderMime() {
   if (typeof MediaRecorder === 'undefined') return null;
-  return ['video/mp4;codecs=avc1.640028', 'video/mp4;codecs=avc1.42E028', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
-    .find(t => MediaRecorder.isTypeSupported(t)) || null;
+  const mp4 = ['video/mp4;codecs=avc1.640028', 'video/mp4;codecs=avc1.42E028', 'video/mp4'];
+  const webm = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  // Match the imported video's container when the browser can record it.
+  const order = fxs.sourceFormat === 'webm' ? [...webm, ...mp4] : [...mp4, ...webm];
+  return order.find(t => MediaRecorder.isTypeSupported(t)) || null;
 }
 
 // Records the canvas (plus, optionally, the sound of a video) – stop() resolves with the finished file.
@@ -1432,9 +1607,22 @@ function fxStartRecorder(size, audioFrom = null) {
     ext: mime.includes('mp4') ? 'mp4' : 'webm',
     stop: () => {
       if (recorder.state !== 'inactive') recorder.stop();
-      return finished;
+      return finished.then(fxRemuxBlob);
     },
   };
+}
+
+// MediaRecorder writes a fragmented MP4 that video editors (DaVinci Resolve, Premiere…) can't import
+// and the browser can't seek. Re-container it into a flat, progressive MP4 – lossless, same H.264.
+// WebM and anything unexpected pass through unchanged.
+async function fxRemuxBlob(blob) {
+  if (typeof FxRemux === 'undefined' || !/mp4/.test(blob.type || '')) return blob;
+  try {
+    const out = FxRemux.remux(new Uint8Array(await blob.arrayBuffer()));
+    return out ? new Blob([out], { type: 'video/mp4' }) : blob;
+  } catch {
+    return blob;
+  }
 }
 
 function fxOnce(el, event, timeoutMs = 0) {
@@ -1475,10 +1663,12 @@ async function fxExportVideo() {
       v.currentTime = 0;
       await fxOnce(v, 'seeked', 5000);
     }
+    fxApplyTimeline(true); // start on the first keyframe's look
     fxDraw(size, { refresh: true });
     rec = fxStartRecorder(size, fxs.exportAudio ? v : null);
     const onFrame = () => {
       if (cancelled || !fxs.busy) return;
+      fxApplyTimeline(); // switch the look as the playhead crosses keyframes
       fxDraw(size, { refresh: true });
       fxBusyProgress(v.duration ? v.currentTime / v.duration : 0);
       if (!v.ended) fxNextVideoFrame(v, onFrame);
@@ -1570,7 +1760,8 @@ async function fxToggleRecord() {
 // ── AI coder ────────────────────────────────────────────────────────────────
 
 function fxCoderAvailable(m) {
-  return (m.provider === 'pollinations' && fxs.coder.pollinations) || (m.provider === 'gemini' && fxs.coder.gemini);
+  if (m.availableNow === false) return false;
+  return (m.provider === 'pollinations' && fxs.coder.pollinations) || (m.provider === 'gemini' && fxs.coder.gemini) || (m.provider === 'cloudflare' && fxs.coder.cloudflare) || m.provider === 'huggingface';
 }
 
 function fxPreferredCoder() {

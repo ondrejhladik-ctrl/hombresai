@@ -7,6 +7,7 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
   <script src="/fx-engine.js" defer></script>
+  <script src="/fx-remux.js" defer></script>
   <script src="/fx-ui.js" defer></script>
   <script src="/vec-trace.js" defer></script>
   <script src="/vec-ui.js" defer></script>
@@ -156,10 +157,23 @@
 
         <section class="fxe-stage" aria-label="Preview">
           <div class="fxe-toolbar">
-            <button class="btn small" id="fxeOpenBtn" type="button" title="Open an image or a video from your computer">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>
-              <span>Open image or video</span>
-            </button>
+            <div class="fxe-open" id="fxeOpen">
+              <button class="btn small" id="fxeOpenBtn" type="button" aria-haspopup="true" aria-expanded="false" title="Open a file, or pick one of your images">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>
+                <span>Open image or video</span>
+                <svg class="fxe-caret" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+              </button>
+              <div class="fxe-open-menu" id="fxeOpenMenu" hidden>
+                <button class="fxe-open-item" id="fxeOpenFile" type="button">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>
+                  <span>From your computer…</span>
+                </button>
+                <div class="fxe-strip-wrap" id="fxeStripWrap" hidden>
+                  <span class="fxe-strip-label">Your images</span>
+                  <div class="fxe-strip" id="fxeStrip"></div>
+                </div>
+              </div>
+            </div>
             <button class="btn small ghost" id="fxeCameraBtn" type="button" aria-pressed="false">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6.5" width="13" height="11" rx="2"/><path d="m16 10.5 5-3v9l-5-3z"/></svg>
               <span>Camera</span>
@@ -176,7 +190,7 @@
             <canvas id="fxeCanvas" hidden></canvas>
             <div class="fxe-empty" id="fxeEmpty">
               <b>Drop an image or a video here</b>
-              <span>…or click “Open image or video”, paste with Ctrl+V, use the camera, or pick one of your images below.</span>
+              <span>…or click “Open image or video” (your own images are in there too), paste with Ctrl+V, or use the camera.</span>
             </div>
             <div class="fxe-busy" id="fxeBusy" hidden>
               <div class="fxe-busy-box">
@@ -187,15 +201,21 @@
               </div>
             </div>
           </div>
-          <div class="fxe-transport" id="fxeTransport" hidden>
-            <button class="icon-btn" id="fxePlay" type="button" aria-label="Play"></button>
-            <input type="range" id="fxeSeek" min="0" max="1000" step="1" value="0" aria-label="Position in the video">
-            <span class="fxe-time" id="fxeTime">0:00 / 0:00</span>
-            <button class="icon-btn" id="fxeMute" type="button" aria-label="Sound"></button>
-          </div>
-          <div class="fxe-strip-wrap" id="fxeStripWrap" hidden>
-            <span class="fxe-strip-label">Your images</span>
-            <div class="fxe-strip" id="fxeStrip"></div>
+          <div class="fxe-transport fxe-timeline" id="fxeTransport" hidden>
+            <div class="fxe-tl-row">
+              <button class="icon-btn" id="fxePlay" type="button" aria-label="Play"></button>
+              <div class="fxe-tl-track" id="fxeTlTrack">
+                <div class="fxe-tl-keys" id="fxeTlKeys" aria-hidden="true"></div>
+                <input type="range" id="fxeSeek" min="0" max="1000" step="1" value="0" aria-label="Position in the video">
+              </div>
+              <span class="fxe-time" id="fxeTime">0:00 / 0:00</span>
+              <button class="icon-btn" id="fxeMute" type="button" aria-label="Sound"></button>
+            </div>
+            <div class="fxe-tl-bar">
+              <button class="btn small primary" id="fxeAddKey" type="button" title="Add a key at the playhead – from here on this effect applies">+ Key</button>
+              <span class="fxe-tl-info" id="fxeTlInfo"></span>
+              <button class="btn small ghost" id="fxeDelKey" type="button" hidden>Delete key</button>
+            </div>
           </div>
         </section>
 
@@ -368,6 +388,15 @@
               <li>Paste it above and click <b>Save &amp; check</b>. The app checks it with Hugging Face and stores it only on this computer.</li>
             </ol>
           </div>
+        </section>
+        <section>
+          <h3>Free open-source models</h3>
+          <p class="muted small">The app searches Hugging Face, Pollinations, Cloudflare and ComfyUI’s official templates once a day for open models that run for free – open source, and models with their author’s own license (free for personal use; each one says what its license allows) – checks it can drive them, and sorts them best first. Image models join the model menu (and <b>Best free (auto)</b>, which tries them one after another), video models join the Video view, code models join the AI coders in Effects and Vectors. Each model’s app is checked without generating anything; the first real picture shows whether it works, and a model that fails twice is hidden for a few days.</p>
+          <div class="free-head">
+            <p class="key-status" id="freeStatus"></p>
+            <button class="btn small" id="freeRefresh" type="button">Search now</button>
+          </div>
+          <div id="freeLists" class="free-lists"></div>
         </section>
         <section>
           <h3>Connect Claude</h3>

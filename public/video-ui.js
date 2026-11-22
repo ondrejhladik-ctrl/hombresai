@@ -339,7 +339,7 @@ function vdRenderGen() {
   const addition = vdGraphAddition();
   const m = vdModel(g.model) || {};
   const modelSel = h('select', { class: 'fxe-select', 'aria-label': 'Video model' },
-    ...vd.models.map(x => h('option', { value: x.id, selected: x.id === m.id }, `${x.label} · ${x.free ? 'free' : `≈ ${fmtPrice(x.pricePerSecond)} / s`}`)));
+    ...vd.models.filter(x => x.availableNow !== false || x.id === m.id).map(x => h('option', { value: x.id, selected: x.id === m.id }, `${x.label} · ${x.free ? 'free' : `≈ ${fmtPrice(x.pricePerSecond)} / s`}`)));
   modelSel.addEventListener('change', () => vdSetModel(modelSel.value));
   const lengths = [];
   for (let s = m.free ? 2 : m.minSeconds || 3; s <= (m.maxSeconds || 10); s++) lengths.push(s);
@@ -361,7 +361,7 @@ function vdRenderGen() {
         sel('Length', 'duration', lengths, v => `${v} s`),
         m.free ? fixed('Sound', m.sound ? 'With sound' : 'Silent')
           : h('label', { class: 'fxe-ctl fxe-toggle vd-sound' }, h('span', {}, 'Sound'), (() => { const cb = h('input', { type: 'checkbox', class: 'switch', checked: g.sound }); cb.addEventListener('change', () => { g.sound = cb.checked; }); return cb; })())),
-      frame('first', m.firstFrame === 'auto' ? 'First frame (drawn from the prompt if empty)' : 'First frame'),
+      m.firstFrame !== false ? frame('first', m.firstFrame === 'auto' ? 'First frame (drawn from the prompt if empty)' : 'First frame') : null,
       g.first && m.lastFrame ? frame('last', 'Last frame') : null,
       h('label', { class: 'check vd-check' }, (() => { const cb = h('input', { type: 'checkbox', checked: g.addToTimeline }); cb.addEventListener('change', () => { g.addToTimeline = cb.checked; }); return cb; })(), h('span', {}, 'Add it to the timeline when it’s ready')),
       h('button', { type: 'button', class: 'btn primary vx-gen-btn', onclick: vdGenerate }, icon('sparkle', 16), h('span', {}, 'Generate video'), h('small', {}, videoPrice(g.duration, g.resolution, g.model))),
@@ -723,7 +723,7 @@ function vdRenderSide() {
   resolution.addEventListener('change', () => { r.resolution = resolution.value; vdRenderSide(); });
   const rm = vdModel(r.model) || vdModel('') || {};
   const modelSel = h('select', { class: 'fxe-select', 'aria-label': 'Model for regenerating' },
-    ...vd.models.map(x => h('option', { value: x.id, selected: x.id === rm.id }, `${x.label} · ${x.free ? 'free' : `≈ ${fmtPrice(x.pricePerSecond)} / s`}`)));
+    ...vd.models.filter(x => x.availableNow !== false || x.id === rm.id).map(x => h('option', { value: x.id, selected: x.id === rm.id }, `${x.label} · ${x.free ? 'free' : `≈ ${fmtPrice(x.pricePerSecond)} / s`}`)));
   modelSel.addEventListener('change', () => { r.model = modelSel.value; vdRenderSide(); });
   const busy = [...vd.jobs.values()].some(j => j.status === 'running' && j.segmentId === seg.id);
   const typing = document.activeElement?.matches?.('#vdSide textarea') ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
