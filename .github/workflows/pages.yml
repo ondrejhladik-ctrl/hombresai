@@ -1,4 +1,8 @@
-# The web version on GitHub Pages: builds web/dist (the app's pages + server.js for the browser) and publishes it.
+# The web version on GitHub Pages: builds web/dist (the app's pages + server.js for the browser).
+# It publishes TWO ways so the site works whatever the repo's Pages "Source" is set to:
+#   - commits the built app to the repo ROOT  -> served when Source = "Deploy from a branch" (main/root),
+#     which otherwise renders README.md instead of the app;
+#   - uploads it as a Pages artifact          -> served when Source = "GitHub Actions".
 # Runs on every push to main, and on weekdays after the CNB publishes the day's exchange rates.
 name: Web version (GitHub Pages)
 
@@ -10,20 +14,17 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,9 +34,28 @@ jobs:
         run: npm i --prefix web --no-save --no-audit --no-fund esbuild@0.25.0 buffer@6.0.3 path-browserify@1.0.1
       - name: Build the web version
         run: node web/build.mjs
+      # Keep the built app at the repo root (served on "Deploy from a branch"). The bot push uses
+      # GITHUB_TOKEN, so it doesn't start this workflow again; [skip ci] is a belt-and-braces guard.
+      - name: Publish the app to the repo root
+        run: |
+          cp -r web/dist/* .
+          touch .nojekyll
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Root already up to date."
+          else
+            git commit -m "Publish web app to root [skip ci]"
+            git push
+          fi
+      # Also publish via the Actions path (served when Source = "GitHub Actions"). Allowed to fail so
+      # a "branch" source doesn't fail the whole run.
       - uses: actions/configure-pages@v5
+        continue-on-error: true
       - uses: actions/upload-pages-artifact@v3
+        continue-on-error: true
         with:
           path: web/dist
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - uses: actions/deploy-pages@v4
+        continue-on-error: true
