@@ -1794,7 +1794,17 @@ async function fxExportVideo() {
       await fxOnce(v, 'seeked', 5000);
     }
     fxApplyTimeline(true); // start on the first keyframe's look
-    fxDraw(size, { refresh: true });
+    // Warm up the pipeline at the export size before any footage plays: the first draw at a new
+    // (possibly 4K) resolution compiles shaders and allocates framebuffers, which would otherwise
+    // stall the opening frames and freeze the start of the recording. gl.finish() forces the GPU
+    // to actually complete that work now, while we're still paused.
+    const gl = fxs.engine && fxs.engine.gl;
+    for (let i = 0; i < 3; i++) {
+      fxDraw(size, { refresh: true });
+      try { gl && gl.finish(); } catch { /* ignore */ }
+      await new Promise(r => requestAnimationFrame(r));
+      if (cancelled) break;
+    }
     const onFrame = () => {
       if (cancelled || !fxs.busy) return;
       const tl = fxHasTimeline() ? fxTimelineAt(fxVideoTime()) : null;
