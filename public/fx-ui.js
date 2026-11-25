@@ -1784,15 +1784,13 @@ async function fxExportVideo() {
   let cancelled = false;
   let finish;
   const finished = new Promise(resolve => { finish = resolve; });
-  fxSetBusy('Exporting video…', { ownsCanvas: true, progress: 0, cancel: () => { cancelled = true; finish(); } });
+  fxSetBusy('Preparing export…', { ownsCanvas: true, progress: 0, cancel: () => { cancelled = true; finish(); } });
+  const seekTo = async t => { v.currentTime = t; await fxOnce(v, 'seeked', 5000); };
   try {
     v.pause();
     v.loop = false;
-    v.muted = !fxs.exportAudio;
-    if (v.currentTime > 0) {
-      v.currentTime = 0;
-      await fxOnce(v, 'seeked', 5000);
-    }
+    v.muted = true; // the prep pass is silent
+    if (v.currentTime > 0) await seekTo(0);
     fxApplyTimeline(true); // start on the first keyframe's look
     // Warm up the pipeline at the export size before any footage plays: the first draw at a new
     // (possibly 4K) resolution compiles shaders and allocates framebuffers, which would otherwise
@@ -1805,6 +1803,31 @@ async function fxExportVideo() {
       await new Promise(r => requestAnimationFrame(r));
       if (cancelled) break;
     }
+    // Dry-run the live render loop WITHOUT recording until it reaches real-time cadence. The first
+    // seconds of playback spin up the video decoder and JIT the per-frame code; doing that now – not
+    // while recording – means the recorded pass starts already smooth. Then rewind to the start.
+    if (!cancelled) await new Promise(resolve => {
+      let frames = 0, steady = 0, last = performance.now();
+      const step = () => {
+        if (cancelled || !fxs.busy) { resolve(); return; }
+        const now = performance.now(), dt = now - last; last = now;
+        fxApplyTimeline();
+        fxDraw(size, { refresh: true });
+        frames++;
+        if (frames > 2 && dt < 45) steady++; else if (frames > 2) steady = 0; // dt < 45 ms ≈ 22+ fps
+        if (steady >= 5 || frames > 45 || v.ended) { resolve(); return; } // ready, or give up after ~1.5 s
+        fxNextVideoFrame(v, step);
+      };
+      fxNextVideoFrame(v, step);
+      v.play().catch(() => resolve());
+    });
+    v.pause();
+    if (cancelled) throw new Error('cancelled');
+    await seekTo(0); // rewind for the real, recorded pass – the decoder stays warm
+    v.muted = !fxs.exportAudio;
+    fxApplyTimeline(true);
+    fxDraw(size, { refresh: true });
+    fxSetBusy('Exporting video…', { ownsCanvas: true, progress: 0, cancel: () => { cancelled = true; finish(); } });
     const onFrame = () => {
       if (cancelled || !fxs.busy) return;
       const tl = fxHasTimeline() ? fxTimelineAt(fxVideoTime()) : null;
@@ -1821,8 +1844,9 @@ async function fxExportVideo() {
     await v.play();
     await finished;
   } catch (err) {
+    const wasCancel = cancelled || err?.message === 'cancelled';
     cancelled = true;
-    toastError(err, 'The video export failed');
+    if (!wasCancel) toastError(err, 'The video export failed');
   }
   v.removeEventListener('ended', finish);
   const blob = rec ? await rec.stop() : null;
