@@ -87,6 +87,19 @@ void main() {
 }
 `;
 
+// Crossfade two finished frames (A → B by uT) – the timeline's gradual transition between keyframes.
+const FX_MIX = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D uA;
+uniform sampler2D uB;
+uniform float uT;
+void main() {
+  fragColor = mix(texture(uA, vUv), texture(uB, vUv), clamp(uT, 0.0, 1.0));
+}
+`;
+
 // Shared header of every effect – documented in effects/README.md.
 const FX_PRELUDE = `#version 300 es
 precision highp float;
@@ -787,7 +800,7 @@ class FxEngine {
     gl.compileShader(this.vs);
     this.programs = new Map(); // effect source -> compiled program or compile errors
     this.passes = {};
-    for (const [name, src] of Object.entries({ adjust: FX_ADJUST, bright: FX_BRIGHT, blur: FX_BLUR, final: FX_FINAL, composite: FX_COMPOSITE })) {
+    for (const [name, src] of Object.entries({ adjust: FX_ADJUST, bright: FX_BRIGHT, blur: FX_BLUR, final: FX_FINAL, composite: FX_COMPOSITE, mix: FX_MIX })) {
       const p = this.link(src);
       if (!p.ok) throw new Error(`Internal shader “${name}” failed: ${p.log}`);
       this.passes[name] = p;
@@ -1175,9 +1188,33 @@ class FxEngine {
       gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
       return new ImageData(px, W, H);
     }
+    if (o.toTarget) {
+      // render the finished frame into a texture instead of the canvas, so two looks can be crossfaded
+      const T = this.target(`${P}out`, W, H);
+      this.draw(fin, T, W, H);
+      return T;
+    }
     if (this.canvas.width !== W) this.canvas.width = W;
     if (this.canvas.height !== H) this.canvas.height = H;
     this.draw(fin, null, W, H);
+    return true;
+  }
+
+  // Crossfade two finished frames (from render({toTarget:true})) onto the canvas, A→B by t (0..1).
+  blend(a, b, t, out) {
+    const gl = this.gl;
+    const W = Math.max(1, Math.round(out.width));
+    const H = Math.max(1, Math.round(out.height));
+    const m = this.passes.mix;
+    gl.useProgram(m.program);
+    this.bindTex(0, a.tex);
+    gl.uniform1i(m.loc('uA'), 0);
+    this.bindTex(2, b.tex);
+    gl.uniform1i(m.loc('uB'), 2);
+    gl.uniform1f(m.loc('uT'), t);
+    if (this.canvas.width !== W) this.canvas.width = W;
+    if (this.canvas.height !== H) this.canvas.height = H;
+    this.draw(m, null, W, H);
     return true;
   }
 }

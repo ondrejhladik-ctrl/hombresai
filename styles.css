@@ -1263,6 +1263,12 @@ body.view-effects .toasts, body.view-vectors .toasts, body.view-nodes .toasts, b
 .fxe-key.active { background: var(--ink); outline: 2px solid var(--accent); outline-offset: 1px; }
 .fxe-tl-bar { display: flex; align-items: center; gap: 10px; }
 .fxe-tl-info { flex: 1; min-width: 0; overflow: hidden; color: var(--ink-2); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.fxe-trans { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-2); font-size: 12px; white-space: nowrap; }
+.fxe-trans[hidden] { display: none; }
+.fxe-trans input[type="range"] { width: 120px; accent-color: var(--accent); }
+.fxe-trans-val { min-width: 48px; color: var(--ink); font-variant-numeric: tabular-nums; }
+/* the fade-in region on the timeline track */
+.fxe-fade { position: absolute; top: 2px; height: 6px; border-radius: 3px; background: linear-gradient(90deg, transparent, var(--accent)); opacity: 0.55; pointer-events: none; }
 
 .fxe-inspector { min-height: 0; overflow-y: auto; border: 0; background: var(--paper); box-shadow: var(--shadow-lg); }
 .fxe-pad { padding: 16px; }

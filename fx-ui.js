@@ -7,7 +7,8 @@
 
 const FX_CATEGORY_ORDER = ['Mine', 'Pixel', 'Dither', 'Print', 'Lines', 'Text', 'Color', 'Glitch', 'Edges', 'Distort'];
 const FX_EXPORT_SCALES = [1, 2, 4];
-const FX_VIDEO_SIDES = [1920, 1280, 854];
+const FX_VIDEO_SIDES = [3840, 1920, 1280, 854];
+const FX_VIDEO_LABELS = { 3840: '4K', 1920: '1080p', 1280: '720p', 854: '480p' };
 const FX_CLIP_SECONDS = [3, 5, 10];
 const FX_ZOOMS = [0.25, 0.5, 1, 2, 4];
 const FX_FORMATS = { png: ['image/png', 'png'], jpeg: ['image/jpeg', 'jpg'], webp: ['image/webp', 'webp'] };
@@ -170,6 +171,7 @@ function fxBindEvents() {
   });
   $('#fxeAddKey').addEventListener('click', fxAddKeyframe);
   $('#fxeDelKey').addEventListener('click', fxDeleteActiveKeyframe);
+  $('#fxeTrans').addEventListener('input', e => fxSetActiveTrans(Number(e.target.value) / 10));
   $('#fxeCameraBtn').addEventListener('click', fxToggleCamera);
   $('#fxeNewBtn').addEventListener('click', () => fxOpenAi('new'));
   $('#fxeSearch').addEventListener('input', e => { fxs.query = e.target.value; fxRenderCards(); });
@@ -256,6 +258,7 @@ function fxBindEvents() {
 // ── Effects and cards ───────────────────────────────────────────────────────
 
 async function fxReloadEffects({ quiet = false } = {}) {
+  fxTransCache.clear(); // effects recompile – drop cached crossfade look-states
   let data;
   try {
     data = await api('/api/effects');
@@ -568,9 +571,16 @@ function fxRequestRender() {
 function fxFrame() {
   fxs.raf = 0;
   if (!fxActive() || fxs.busy?.ownsCanvas) return;
-  if (fxs.source?.kind === 'video') fxApplyTimeline(); // load the keyframe active at the playhead
   const view = fxViewSize();
-  const done = fxDraw(fxs.recordSize || view);
+  const size = fxs.recordSize || view;
+  const tl = fxHasTimeline() ? fxTimelineAt(fxVideoTime()) : null;
+  let done;
+  if (tl && tl.a) {
+    done = fxDrawTransition(tl, size); // crossfading between two keyframes
+  } else {
+    if (tl) fxApplyTimeline(); // load the keyframe active at the playhead
+    done = fxDraw(size);
+  }
   if (done === null && fxs.source && fxs.source.kind !== 'image') { fxRequestRender(); return; } // first frame not ready yet
   if (fxLive() || fxIsAnimated() || fxs.recorder) fxRequestRender();
 }
@@ -1024,7 +1034,8 @@ function fxKeyframeAt(time) {
 }
 
 function fxResetKeyframes() {
-  fxs.keyframes = fxHasTimeline() ? [{ id: uid(), time: 0, snap: fxSnapshot() }] : [];
+  fxTransCache.clear();
+  fxs.keyframes = fxHasTimeline() ? [{ id: uid(), time: 0, trans: 0, snap: fxSnapshot() }] : [];
   fxs.activeKf = fxs.keyframes[0]?.id || null;
   fxs.appliedKf = fxs.activeKf;
   fxRenderTimeline();
@@ -1042,7 +1053,7 @@ function fxAddKeyframe() {
   const time = fxVideoTime();
   const near = fxs.keyframes.find(k => Math.abs(k.time - time) < 0.08);
   if (near) { near.snap = fxSnapshot(); fxs.activeKf = near.id; }
-  else { const kf = { id: uid(), time, snap: fxSnapshot() }; fxs.keyframes.push(kf); fxSortKeyframes(); fxs.activeKf = kf.id; }
+  else { const kf = { id: uid(), time, trans: 0, snap: fxSnapshot() }; fxs.keyframes.push(kf); fxSortKeyframes(); fxs.activeKf = kf.id; }
   fxs.appliedKf = fxs.activeKf;
   fxRenderTimeline();
   toast('Key added – change the effect here and it applies from this point.', 'success');
@@ -1079,12 +1090,94 @@ function fxApplyTimeline(force = false) {
   }
 }
 
+// ── Gradual transitions between keyframes (crossfade) ────────────────────────
+// A keyframe may fade IN over `trans` seconds from the key before it. Inside that window the two
+// looks are rendered and mixed on the GPU; outside it a single key applies (hard switch, trans 0).
+const fxTransCache = new Map(); // keyframe id -> { snap, state }; rebuilt when the key's look is edited
+
+function fxBuildState(snap) {
+  const card = fxs.cards.find(c => c.key === snap.key) || fxs.cards[0];
+  if (!card) return null;
+  const effect = fxs.effects.get(card.effectId);
+  return {
+    program: fxs.engine.compile(effect.source),
+    effect,
+    params: { ...fxDefaultParams(effect, card.preset), ...fxCoerceParams(effect, snap.params || {}) },
+    look: fxCleanLook(snap.look || {}),
+    layers: (snap.stack || []).map(s => fxMakeLayer(s.key, s.params, s.enabled)).filter(Boolean).slice(0, 6),
+  };
+}
+
+function fxTransState(kf) {
+  const hit = fxTransCache.get(kf.id);
+  if (hit && hit.snap === kf.snap) return hit.state;
+  const state = fxBuildState(kf.snap);
+  fxTransCache.set(kf.id, { snap: kf.snap, state });
+  return state;
+}
+
+// Render one built look-state into a texture (toTarget) or the canvas.
+function fxDrawState(st, size, extra = {}) {
+  if (!st) return null;
+  return fxs.engine.render({
+    program: st.program,
+    effect: st.effect,
+    params: st.params,
+    layers: st.layers.filter(l => l.enabled && l.program.ok).map(l => ({ program: l.program, effect: l.effect, params: l.params })),
+    look: { palette: fxPaletteHexes(st.look), adjust: st.look.adjust, finish: st.look.finish },
+    out: size,
+    design: fxs.design,
+    time: (performance.now() - fxs.started) / 1000,
+    refresh: fxs.source.kind !== 'image',
+    ...extra,
+  });
+}
+
+// At a video time: inside a keyframe's fade-in window → {a, b, factor}; otherwise {single}.
+function fxTimelineAt(time) {
+  const ks = fxs.keyframes;
+  for (let i = 1; i < ks.length; i++) {
+    const b = ks[i], a = ks[i - 1];
+    const tr = Math.min(b.trans || 0, b.time - a.time);
+    if (tr > 0.001 && time >= b.time - tr && time < b.time) return { a, b, factor: (time - (b.time - tr)) / tr };
+  }
+  return { single: fxKeyframeAt(time) };
+}
+
+// Crossfade the two looks of a transition onto the canvas (or export frame).
+function fxDrawTransition(tl, size, extra = {}) {
+  const a = fxTransState(tl.a);
+  const b = fxTransState(tl.b);
+  if (!a || !b) return fxDraw(size, extra);
+  const TA = fxDrawState(a, size, { ...extra, toTarget: true, targetPrefix: 'tA' });
+  const TB = fxDrawState(b, size, { ...extra, toTarget: true, targetPrefix: 'tB' });
+  if (!TA || !TB) return null;
+  return fxs.engine.blend(TA, TB, tl.factor, size);
+}
+
+// Set the active keyframe's fade-in length (0 = instant); the first key has none.
+function fxSetActiveTrans(sec) {
+  const i = fxs.keyframes.findIndex(k => k.id === fxs.activeKf);
+  if (i <= 0) return;
+  const gap = fxs.keyframes[i].time - fxs.keyframes[i - 1].time;
+  fxs.keyframes[i].trans = Math.max(0, Math.min(sec, gap));
+  fxRenderTimeline();
+  fxRequestRender();
+}
+
 function fxRenderTimeline() {
   const keys = $('#fxeTlKeys');
   if (!keys) return;
   const v = fxs.source?.kind === 'video' ? fxs.source.el : null;
   const dur = v && Number.isFinite(v.duration) ? v.duration : 0;
-  keys.replaceChildren(...(fxHasTimeline() ? fxs.keyframes : []).map(k => h('button', {
+  const marks = fxHasTimeline() ? fxs.keyframes : [];
+  // a shaded bar before each key shows its fade-in (gradual transition)
+  const fades = [];
+  for (let i = 1; i < marks.length; i++) {
+    const tr = Math.min(marks[i].trans || 0, marks[i].time - marks[i - 1].time);
+    if (dur && tr > 0.001) fades.push(h('div', { class: 'fxe-fade', style: `left:${((marks[i].time - tr) / dur) * 100}%;width:${(tr / dur) * 100}%` }));
+  }
+  keys.replaceChildren(...fades, ...marks.map(k => h('button', {
     type: 'button',
     class: `fxe-key${k.id === fxs.activeKf ? ' active' : ''}`,
     style: `left:${dur ? Math.min(100, Math.max(0, (k.time / dur) * 100)) : 0}%`,
@@ -1103,6 +1196,21 @@ function fxRenderTimeline() {
   if (fxHasTimeline()) $('#fxeSeek').disabled = !fxCanSeek();
   const del = $('#fxeDelKey');
   if (del) { const kf = fxs.keyframes.find(k => k.id === fxs.activeKf); del.hidden = !(fxHasTimeline() && fxs.keyframes.length > 1 && kf && kf.time > 0.02); }
+  // the transition (fade-in) slider for the selected key – the first key has no "before"
+  const tw = $('#fxeTransWrap');
+  if (tw) {
+    const i = fxs.keyframes.findIndex(k => k.id === fxs.activeKf);
+    const show = fxHasTimeline() && i > 0;
+    tw.hidden = !show;
+    if (show) {
+      const kf = fxs.keyframes[i];
+      const gap = kf.time - fxs.keyframes[i - 1].time;
+      const slider = $('#fxeTrans');
+      slider.max = String(Math.max(1, Math.round(gap * 10)));
+      if (document.activeElement !== slider) slider.value = String(Math.round((kf.trans || 0) * 10));
+      $('#fxeTransVal').textContent = (kf.trans || 0) > 0.001 ? `${(kf.trans || 0).toFixed(1)} s` : 'Instant';
+    }
+  }
 }
 
 // ── The "Open image or video" popover (holds "your images") ──────────────────
@@ -1424,13 +1532,17 @@ function fxExportControls() {
   }
   if (s.kind === 'video') {
     const long = Math.max(s.width, s.height);
-    const sides = FX_VIDEO_SIDES.filter(x => x <= long);
-    if (!sides.length) sides.push(long);
-    const side = sides.includes(fxs.videoSide) ? fxs.videoSide : sides[0];
+    const maxSide = Math.min(fxs.engine.maxSize || 4096, 3840);
+    const sides = FX_VIDEO_SIDES.filter(x => x <= maxSide);
+    if (!sides.length) sides.push(Math.min(long, maxSide));
+    const side = sides.includes(fxs.videoSide) ? fxs.videoSide : (sides.includes(1920) ? 1920 : sides[0]);
+    if (fxs.videoSide !== side) fxs.videoSide = side; // keep the export in step with the shown choice
+    const out = fxVideoExportSize(); // the real encoded size (a non-16:9 clip is capped to stay encodable)
     return [
       h('div', { class: 'fxe-ctl' },
-        h('div', { class: 'fxe-ctl-head' }, h('span', null, 'Video size (long side)')),
-        h('div', { class: 'seg' }, sides.map(x => segBtn(x === side, () => { fxs.videoSide = x; fxPersist(); fxRenderInspector(); }, `${x} px`)))),
+        h('div', { class: 'fxe-ctl-head' }, h('span', null, 'Video size (long side)'), h('output', null, `${out.width} × ${out.height}`)),
+        h('div', { class: 'seg' }, sides.map(x => segBtn(x === side, () => { fxs.videoSide = x; fxPersist(); fxRenderInspector(); }, FX_VIDEO_LABELS[x] || `${x} px`, `${x} px${x > long ? ' ↑' : ''}`)))),
+      side > long ? h('p', { class: 'muted small' }, `Bigger than the clip – it’s scaled up to ${out.width} × ${out.height}. The effect stays crisp; the footage is enlarged.`) : null,
       fxToggle('Include sound', fxs.exportAudio, v => { fxs.exportAudio = v; fxPersist(); }),
       h('div', { class: 'fxe-btn-row' },
         h('button', { type: 'button', class: 'btn primary', id: 'fxeExportVideoBtn', onclick: fxExportVideo }, icon('film', 16), 'Export video')),
@@ -1487,6 +1599,20 @@ function fxExportSize(scale) {
 }
 
 const fxEven = n => Math.max(2, Math.round(n / 2) * 2);
+
+// Hardware video encoders (MediaRecorder's H.264/VP9) can't do arbitrarily large frames:
+// ~UHD (3840×2160 ≈ 8.3 MP) is the safe ceiling, so a square clip asked for at "4K" would
+// become 3840×3840 ≈ 14.7 MP and silently encode to 0 bytes. Target the chosen long side,
+// but keep the total pixel count within that ceiling (preserving the aspect ratio).
+const FX_VIDEO_PIXEL_CAP = 3840 * 2160;
+function fxVideoExportSize() {
+  const s = fxs.source;
+  const long = Math.max(s.width, s.height);
+  let scale = Math.min(fxs.videoSide, fxs.engine.maxSize || 4096) / long; // 4K may upscale a smaller clip
+  const pix = (s.width * scale) * (s.height * scale);
+  if (pix > FX_VIDEO_PIXEL_CAP) scale *= Math.sqrt(FX_VIDEO_PIXEL_CAP / pix);
+  return { width: fxEven(s.width * scale), height: fxEven(s.height * scale) };
+}
 
 function fxSlug(text) {
   return String(text || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'effect';
@@ -1570,9 +1696,15 @@ async function fxExportImage(save) {
   }
 }
 
-function fxRecorderMime() {
+function fxRecorderMime(size) {
   if (typeof MediaRecorder === 'undefined') return null;
-  const mp4 = ['video/mp4;codecs=avc1.640028', 'video/mp4;codecs=avc1.42E028', 'video/mp4'];
+  // Frames above 1080p need a higher H.264 level than the default avc1.640028 (Level 4.0),
+  // which otherwise reports "supported" yet encodes 0 bytes. avc1.64003C is Level 6.0 (up to 8K);
+  // the generic video/mp4 lets Chrome pick a level that fits. vp9 is the cross-browser fallback.
+  const big = size && size.width * size.height > 1920 * 1088;
+  const mp4 = big
+    ? ['video/mp4;codecs=avc1.64003C', 'video/mp4', 'video/mp4;codecs=avc1.640034']
+    : ['video/mp4;codecs=avc1.640028', 'video/mp4;codecs=avc1.42E028', 'video/mp4'];
   const webm = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
   // Match the imported video's container when the browser can record it.
   const order = fxs.sourceFormat === 'webm' ? [...webm, ...mp4] : [...mp4, ...webm];
@@ -1581,7 +1713,7 @@ function fxRecorderMime() {
 
 // Records the canvas (plus, optionally, the sound of a video) – stop() resolves with the finished file.
 function fxStartRecorder(size, audioFrom = null) {
-  const mime = fxRecorderMime();
+  const mime = fxRecorderMime(size);
   if (!mime) throw new Error('This browser can’t record video.');
   const stream = $('#fxeCanvas').captureStream(30);
   if (audioFrom) {
@@ -1592,7 +1724,7 @@ function fxStartRecorder(size, audioFrom = null) {
   }
   const recorder = new MediaRecorder(stream, {
     mimeType: mime,
-    videoBitsPerSecond: Math.round(Math.min(40e6, Math.max(4e6, size.width * size.height * 6))),
+    videoBitsPerSecond: Math.round(Math.min(60e6, Math.max(4e6, size.width * size.height * 6))),
   });
   const chunks = [];
   recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
@@ -1645,9 +1777,7 @@ async function fxExportVideo() {
   const s = fxs.source;
   if (!s || s.kind !== 'video' || fxs.busy) return;
   const v = s.el;
-  const long = Math.max(s.width, s.height);
-  const scale = Math.min(1, fxs.videoSide / long);
-  const size = { width: fxEven(s.width * scale), height: fxEven(s.height * scale) };
+  const size = fxVideoExportSize();
   const wasLoop = v.loop;
   const wasMuted = v.muted;
   let rec = null;
@@ -1665,11 +1795,14 @@ async function fxExportVideo() {
     }
     fxApplyTimeline(true); // start on the first keyframe's look
     fxDraw(size, { refresh: true });
-    rec = fxStartRecorder(size, fxs.exportAudio ? v : null);
     const onFrame = () => {
       if (cancelled || !fxs.busy) return;
-      fxApplyTimeline(); // switch the look as the playhead crosses keyframes
-      fxDraw(size, { refresh: true });
+      const tl = fxHasTimeline() ? fxTimelineAt(fxVideoTime()) : null;
+      if (tl && tl.a) fxDrawTransition(tl, size, { refresh: true }); // crossfade
+      else { fxApplyTimeline(); fxDraw(size, { refresh: true }); } // switch as the playhead crosses keyframes
+      // Start recording on the first real video frame: starting earlier would hold this frame
+      // on the captured stream while the decoder warms up, freezing the start of the export.
+      if (!rec) rec = fxStartRecorder(size, fxs.exportAudio ? v : null);
       fxBusyProgress(v.duration ? v.currentTime / v.duration : 0);
       if (!v.ended) fxNextVideoFrame(v, onFrame);
     };
@@ -1691,6 +1824,8 @@ async function fxExportVideo() {
   if (!cancelled && blob?.size) {
     fxDownload(blob, `${fxBaseName()}.${rec.ext}`);
     toast('Video exported – it’s in your downloads.', 'success');
+  } else if (!cancelled) {
+    toast('The export came out empty – try a smaller video size.', 'error');
   }
 }
 
