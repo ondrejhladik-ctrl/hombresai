@@ -213,6 +213,11 @@
             </div>
             <div class="fxe-tl-bar">
               <button class="btn small primary" id="fxeAddKey" type="button" title="Add a key at the playhead – from here on this effect applies">+ Key</button>
+              <label class="fxe-trans" id="fxeTransWrap" hidden title="How long this key fades in from the one before it – 0 = instant (hard cut)">
+                <span>Transition</span>
+                <input type="range" id="fxeTrans" min="0" max="50" step="1" value="0" aria-label="Transition length">
+                <span class="fxe-trans-val" id="fxeTransVal">Instant</span>
+              </label>
               <span class="fxe-tl-info" id="fxeTlInfo"></span>
               <button class="btn small ghost" id="fxeDelKey" type="button" hidden>Delete key</button>
             </div>
