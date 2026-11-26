@@ -61,6 +61,13 @@ const fxs = {
   appliedKf: null,      // keyframe currently loaded into the live look (apply only when it changes)
   sourceFormat: null,   // the imported file's format, so export matches it
   openMenu: false,
+  reel: [],             // a batch of local files picked at once (folder or multi-select): [{ file, name }]
+  reelIndex: -1,        // which reel file is on the canvas, so ← / → can step through them
+  presets: [],          // saved looks bundled with their photo/video (from IndexedDB), newest first
+  undo: [],             // Ctrl+Z history: look snapshots (effect, sliders, layers, palette…) before each change
+  redo: [],
+  histBase: null,       // the look as it was after the last recorded change
+  histBaseStr: '',
 };
 
 // The video shown by default, so Effects always has something to work on (bundled in public/samples/).
@@ -117,10 +124,12 @@ async function fxInit() {
   if (await fxReloadEffects()) {
     fxs.stack = (Array.isArray(saved.stack) ? saved.stack : []).map(s => fxMakeLayer(s.key, s.params, s.enabled)).filter(Boolean).slice(0, 6);
     fxSelect(saved.key || 'waveform', { restore: true });
+    fxHistorySync();
   }
   if (fxs.pendingItem) fxConsumePending();
   else if (!fxs.source) fxLoadDefault();
   fxRenderStrip();
+  fxLoadPresets();
 }
 
 function fxRestoreContext() {
@@ -162,12 +171,32 @@ function fxConsumePending() {
 function fxBindEvents() {
   $('#fxeOpenBtn').addEventListener('click', e => { e.stopPropagation(); fxToggleOpenMenu(); });
   $('#fxeOpenFile').addEventListener('click', () => { fxCloseOpenMenu(); $('#fxeFileInput').click(); });
+  $('#fxeOpenFolder').addEventListener('click', () => { fxCloseOpenMenu(); $('#fxeFolderInput').click(); });
   document.addEventListener('click', e => { if (fxs.openMenu && !$('#fxeOpen')?.contains(e.target)) fxCloseOpenMenu(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && fxs.openMenu) fxCloseOpenMenu(); });
-  $('#fxeFileInput').addEventListener('change', e => {
-    const file = e.target.files[0];
-    if (file) fxLoadFile(file);
-    e.target.value = '';
+  const onPick = e => { fxLoadFiles(e.target.files); e.target.value = ''; };
+  $('#fxeFileInput').addEventListener('change', onPick);
+  $('#fxeFolderInput').addEventListener('change', onPick);
+  $('#fxeReelPrev').addEventListener('click', () => fxStepReel(-1));
+  $('#fxeReelNext').addEventListener('click', () => fxStepReel(1));
+  $('#fxeSavePresetBtn').addEventListener('click', fxSavePreset);
+  // Ctrl+Z undo, Ctrl+Shift+Z / Ctrl+Y redo (text fields keep their own undo).
+  document.addEventListener('keydown', e => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || !fxActive() || state.lightbox) return;
+    const k = e.key.toLowerCase();
+    if (k !== 'z' && k !== 'y') return;
+    if (!$('#fxeAiModal').hidden || !$('#fxeCodeModal').hidden || !$('#settingsModal').hidden) return;
+    if (e.target.closest('textarea, [contenteditable], input:not([type=range]):not([type=checkbox]):not([type=color]):not([type=button])')) return;
+    e.preventDefault();
+    if (k === 'y' || e.shiftKey) fxRedo(); else fxUndo();
+  });
+  // ← / → step through the loaded folder (when not typing and no dialog is open).
+  document.addEventListener('keydown', e => {
+    if (!fxActive() || fxs.reel.length < 2 || state.lightbox) return;
+    if (!$('#fxeAiModal').hidden || !$('#fxeCodeModal').hidden || !$('#settingsModal').hidden) return;
+    if (e.target.closest('input, textarea, select')) return;
+    if (e.key === 'ArrowRight') { e.preventDefault(); fxStepReel(1); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); fxStepReel(-1); }
   });
   $('#fxeAddKey').addEventListener('click', fxAddKeyframe);
   $('#fxeDelKey').addEventListener('click', fxDeleteActiveKeyframe);
@@ -301,6 +330,7 @@ function fxMakeLayer(key, params = null, enabled = true, id = uid()) {
 }
 
 function fxLayersChanged() {
+  fxNoteChange();
   fxPersist();
   fxSyncActiveKeyframe();
   fxRenderInspector();
@@ -527,6 +557,7 @@ function fxSelect(key, { keep = false, restore = false, snap = null } = {}) {
     fxs.editing = null; // a card from the gallery replaces the main effect – show its sliders
   }
   if (!program.ok && !keep) toast(`“${card.name}” has an error in its code – open Code to see it.`, 'error');
+  if (!snap && !restore) fxNoteChange();
   fxPersist();
   if (!snap) fxSyncActiveKeyframe(); // a gallery pick updates the keyframe being edited
   fxRenderInspector();
@@ -557,9 +588,77 @@ function fxPersist() {
 }
 
 function fxChanged() {
+  fxNoteChange();
   fxPersist();
   fxSyncActiveKeyframe();
   fxRequestRender();
+}
+
+// ── Undo / redo (Ctrl+Z) ─────────────────────────────────────────────────────
+// Changes are grouped: one slider drag (or a burst of edits) becomes one step once it settles.
+
+const FX_HISTORY_MAX = 100;
+let fxHistTimer = 0;
+
+function fxNoteChange() {
+  if (fxs.histApplying) return;
+  clearTimeout(fxHistTimer);
+  fxHistTimer = setTimeout(fxHistoryCommit, 400);
+}
+
+function fxHistoryCommit() {
+  clearTimeout(fxHistTimer);
+  fxHistTimer = 0;
+  if (!fxs.current || fxs.current.draft) return; // AI / code drafts have their own flow
+  const now = fxSnapshot();
+  const str = JSON.stringify(now);
+  if (str === fxs.histBaseStr) return;
+  if (fxs.histBase && fxs.histBase.key !== 'draft') {
+    fxs.undo.push(fxs.histBase);
+    if (fxs.undo.length > FX_HISTORY_MAX) fxs.undo.shift();
+    fxs.redo = [];
+  }
+  fxs.histBase = now;
+  fxs.histBaseStr = str;
+}
+
+// Make the current look the base without recording a step (start-up, keyframe switches, after undo).
+function fxHistorySync() {
+  if (fxs.histApplying || !fxs.current) return;
+  if (fxHistTimer) fxHistoryCommit(); // keep a pending user change before moving on
+  fxs.histBase = fxSnapshot();
+  fxs.histBaseStr = JSON.stringify(fxs.histBase);
+}
+
+function fxHistoryApply(snap) {
+  fxs.histApplying = true;
+  try {
+    fxApplySnapshot(snap);
+  } finally {
+    fxs.histApplying = false;
+  }
+  fxSyncActiveKeyframe(); // the keyframe being edited follows the undo
+  fxPersist();
+  fxs.histBase = fxSnapshot();
+  fxs.histBaseStr = JSON.stringify(fxs.histBase);
+  fxRenderInspector();
+  fxRequestRender();
+}
+
+function fxUndo() {
+  if (fxHistTimer) fxHistoryCommit();
+  const prev = fxs.undo.pop();
+  if (!prev) { toast('Nothing to undo.'); return; }
+  fxs.redo.push(fxs.histBase);
+  fxHistoryApply(prev);
+}
+
+function fxRedo() {
+  if (fxHistTimer) fxHistoryCommit();
+  const next = fxs.redo.pop();
+  if (!next) { toast('Nothing to redo.'); return; }
+  fxs.undo.push(fxs.histBase);
+  fxHistoryApply(next);
 }
 
 // ── Rendering ───────────────────────────────────────────────────────────────
@@ -768,18 +867,319 @@ function fxRenderStrip() {
 
 // ── Sources: image, video, camera ───────────────────────────────────────────
 
-function fxLoadFile(file) {
+const FX_IMAGE_EXT = /\.(png|jpe?g|webp|gif|avif|bmp)$/i;
+const FX_VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv|mkv)$/i;
+// Camera RAW and HEIC/HEIF – the browser can't decode these, so we convert them to JPG on open.
+const FX_RAW_EXT = /\.(cr3|cr2|crw|nef|nrw|arw|sr2|srf|raf|rw2|orf|dng|pef|raw|3fr|erf|kdc|dcr|mef|mos|mrw|x3f|iiq|cap|heic|heif)$/i;
+
+const fxNeedsConvert = (file, name) => isHeic(file, name) || FX_RAW_EXT.test(name || file.name || '');
+
+function fxCanOpen(file) {
+  const name = file.name || '';
+  return (file.type || '').startsWith('image/') || (file.type || '').startsWith('video/') ||
+    FX_IMAGE_EXT.test(name) || FX_VIDEO_EXT.test(name) || fxNeedsConvert(file, name);
+}
+
+// RAW (.CR3/.NEF/…) and HEIC files bury a full-size JPEG preview the camera already baked in (a CR3 from
+// a Canon holds 6000×4000, 1620×1080 and 160×120 ones). We pull them out of the bytes – no RAW decoder,
+// no dependencies, works offline. The walk is strict: the raw sensor data is full of random FF D8 FF
+// sequences, so a candidate only counts if its header is made of real JPEG segments with a size (SOF)
+// and a scan (SOS) before the end marker.
+function fxJpegInfo(buf, start) {
+  let p = start + 2, w = 0, hgt = 0, sos = false;
+  while (p + 3 < buf.length) {
+    if (buf[p] !== 0xFF) return null;                                         // segments are back to back
+    let m = buf[p + 1];
+    while (m === 0xFF && p + 2 < buf.length) { p++; m = buf[p + 1]; }          // fill bytes
+    if (m === 0xD9) return sos && w && hgt ? { end: p + 2, w, h: hgt } : null; // EOI
+    const known = (m >= 0xC0 && m <= 0xCF) || (m >= 0xDA && m <= 0xDF) || (m >= 0xE0 && m <= 0xEF) || m === 0xFE;
+    if (!known) return null;
+    const len = (buf[p + 2] << 8) | buf[p + 3];
+    if (len < 2 || p + 2 + len > buf.length) return null;
+    if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) { // SOFn: height, width
+      hgt = (buf[p + 5] << 8) | buf[p + 6];
+      w = (buf[p + 7] << 8) | buf[p + 8];
+    }
+    p += 2 + len;
+    if (m === 0xDA) { // start of scan: skip the entropy-coded data up to the next real marker
+      sos = true;
+      while (p + 1 < buf.length) {
+        if (buf[p] === 0xFF) {
+          const n = buf[p + 1];
+          if (n === 0x00 || (n >= 0xD0 && n <= 0xD7)) { p += 2; continue; } // escaped FF / restart
+          break;
+        }
+        p++;
+      }
+    }
+  }
+  return null;
+}
+
+// Every embedded JPEG, biggest (by pixels) first.
+async function fxEmbeddedJpegs(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const found = [];
+  for (let i = 0; i + 3 < buf.length; i++) {
+    if (buf[i] === 0xFF && buf[i + 1] === 0xD8 && buf[i + 2] === 0xFF) {
+      const info = fxJpegInfo(buf, i);
+      if (info) {
+        found.push({ start: i, end: info.end, area: info.w * info.h });
+        i = info.end - 1; // a preview encloses its own EXIF thumbnail – skip past it
+      }
+    }
+  }
+  return found
+    .filter(j => j.area >= 320 * 240) // a bare thumbnail isn't worth editing
+    .sort((a, b) => b.area - a.area || (b.end - b.start) - (a.end - a.start))
+    .map(j => new Blob([buf.subarray(j.start, j.end)], { type: 'image/jpeg' }));
+}
+
+// Returns a JPEG blob the browser can decode, or null if the file has no usable preview inside it.
+async function fxToJpeg(file) {
+  for (const blob of await fxEmbeddedJpegs(file)) {
+    const url = URL.createObjectURL(blob);
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode(); // make sure it actually decodes; otherwise try the next one
+      return blob;
+    } catch { /* next candidate */ } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  return null;
+}
+
+// Pick one or many files (a folder, or a multi-select). Keeps them as a reel you can step through with ← / →.
+function fxLoadFiles(files) {
   if (!fxs.engine) return;
+  const all = [...(files || [])];
+  if (!all.length) return;
+  const usable = all.filter(fxCanOpen);
+  if (!usable.length) {
+    toast('No images or videos in that selection.', 'error');
+    return;
+  }
+  // Sort by name so arrow-key order matches the order in the folder (IMG_4657, _4658, …).
+  usable.sort((a, b) => (a.webkitRelativePath || a.name || '').localeCompare(b.webkitRelativePath || b.name || '', undefined, { numeric: true, sensitivity: 'base' }));
+  fxs.reel = usable.map(f => ({ file: f, name: f.name || 'Image' }));
+  const raw = usable.filter(f => fxNeedsConvert(f, f.name)).length;
+  if (raw) toast(`Loaded ${usable.length} file${usable.length === 1 ? '' : 's'}. ${raw} RAW/HEIC photo${raw === 1 ? '' : 's'} will be converted to JPG as you reach them.`, 'info', { duration: 6000 });
+  fxLoadReelAt(0);
+}
+
+function fxLoadReelAt(i) {
+  if (!fxs.reel.length) return;
+  fxs.reelIndex = (i % fxs.reel.length + fxs.reel.length) % fxs.reel.length;
+  fxLoadFile(fxs.reel[fxs.reelIndex].file, { keepReel: true });
+  fxRenderReel();
+}
+
+async function fxLoadFile(file, { keepReel = false } = {}) {
+  if (!fxs.engine) return;
+  if (!keepReel) fxClearReel();
   const name = file.name || 'Pasted image';
-  if (file.type.startsWith('video/') || /\.(mp4|webm|mov|m4v|ogv|mkv)$/i.test(name)) {
+  if (file.type.startsWith('video/') || FX_VIDEO_EXT.test(name)) {
     fxLoadVideoUrl(URL.createObjectURL(file), name);
-  } else if (isHeic(file, name)) {
-    toast('HEIC photos can’t be opened in Effects – save the photo as JPG or PNG first.', 'error');
-  } else if (file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|avif|bmp)$/i.test(name)) {
+    return;
+  }
+  if (fxNeedsConvert(file, name)) {
+    const token = ++fxs.loadToken;
+    fxSetLoading(true);
+    let blob;
+    try { blob = await fxToJpeg(file); } catch { blob = null; }
+    if (token !== fxs.loadToken) return; // the user moved on while we were converting
+    fxSetLoading(false);
+    if (!blob) {
+      toast(`Couldn’t convert ${name} – it has no JPEG preview inside. Export it as JPG from the camera app first.`, 'error', { duration: 7000 });
+      return;
+    }
+    fxLoadImageUrl(URL.createObjectURL(blob), name.replace(/\.[^.]+$/, '') + '.jpg');
+    return;
+  }
+  if (file.type.startsWith('image/') || FX_IMAGE_EXT.test(name)) {
     fxLoadImageUrl(URL.createObjectURL(file), name);
   } else {
     toast('That isn’t an image or a video.', 'error');
   }
+}
+
+function fxStepReel(dir) {
+  if (fxs.reel.length < 2) return;
+  fxLoadReelAt(fxs.reelIndex + dir);
+}
+
+function fxClearReel() {
+  if (!fxs.reel.length && fxs.reelIndex < 0) return;
+  fxs.reel = [];
+  fxs.reelIndex = -1;
+  fxRenderReel();
+}
+
+function fxRenderReel() {
+  const nav = $('#fxeReel');
+  if (!nav) return;
+  const n = fxs.reel.length;
+  nav.hidden = n < 2;
+  if (n >= 2) $('#fxeReelCount').textContent = `${fxs.reelIndex + 1} / ${n}`;
+}
+
+// ── My presets: a saved look bundled with its photo or video ─────────────────
+// Stored in IndexedDB (not localStorage) because the media blobs are far too big for it.
+
+const FX_DB_NAME = 'hombresai';
+const FX_DB_STORE = 'fxPresets';
+let fxDbPromise = null;
+
+function fxDb() {
+  if (fxDbPromise) return fxDbPromise;
+  fxDbPromise = new Promise((resolve, reject) => {
+    let req;
+    try { req = indexedDB.open(FX_DB_NAME, 1); } catch (err) { reject(err); return; }
+    req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains(FX_DB_STORE)) req.result.createObjectStore(FX_DB_STORE, { keyPath: 'id' }); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return fxDbPromise;
+}
+
+function fxDbRun(mode, fn) {
+  return fxDb().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(FX_DB_STORE, mode);
+    const store = tx.objectStore(FX_DB_STORE);
+    let out;
+    const r = fn(store);
+    if (r) r.onsuccess = () => { out = r.result; };
+    tx.oncomplete = () => resolve(out);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  }));
+}
+
+async function fxLoadPresets() {
+  try {
+    const all = await fxDbRun('readonly', store => store.getAll());
+    fxs.presets = (all || []).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  } catch { fxs.presets = []; }
+  fxRenderPresets();
+}
+
+// A small JPEG of the processed canvas (the effect is already baked into it), used as the preset's cover.
+function fxPresetThumb() {
+  const src = $('#fxeCanvas');
+  if (!src || !src.width || !src.height) return '';
+  const max = 240;
+  const r = Math.min(max / src.width, max / src.height, 1);
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(src.width * r));
+  c.height = Math.max(1, Math.round(src.height * r));
+  try {
+    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.72);
+  } catch { return ''; }
+}
+
+// Grab the current photo/video as a Blob so it can be stored with the preset.
+async function fxCaptureMedia() {
+  const s = fxs.source;
+  if (!s) return null;
+  if (s.kind === 'camera') {
+    const c = document.createElement('canvas');
+    c.width = s.width; c.height = s.height;
+    c.getContext('2d').drawImage(s.el, 0, 0);
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.92));
+    return blob ? { blob, kind: 'image', name: 'Camera frame.jpg' } : null;
+  }
+  if (!s.url) return null;
+  try {
+    const blob = await (await fetch(s.url)).blob();
+    return { blob, kind: s.kind, name: s.name };
+  } catch { return null; }
+}
+
+async function fxSavePreset() {
+  if (!fxs.engine || !fxs.source) { toast('Open a photo or video first, then save a preset.', 'error'); return; }
+  const cur = fxs.current;
+  if (cur?.draft) { toast('Save the effect first (Code → Save effect), then save the preset.', 'error'); return; }
+  const base = fxs.source.name && !/^Sample (image|video)$/.test(fxs.source.name)
+    ? fxs.source.name.replace(/\.[^.]+$/, '')
+    : (cur?.name || 'Preset');
+  const btn = $('#fxeSavePresetBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const media = await fxCaptureMedia();
+    const rec = {
+      id: uid() + Date.now().toString(36),
+      name: base,
+      createdAt: Date.now(),
+      thumb: fxPresetThumb(),
+      key: cur ? cur.key : (state.ui.fx?.key || 'waveform'),
+      params: cur ? fxs.params : (state.ui.fx?.params || {}),
+      look: cur ? fxs.look : (state.ui.fx?.look || null),
+      stack: fxs.stack.map(l => ({ key: l.key, params: l.params, enabled: l.enabled })),
+      media: media?.blob || null,
+      mediaKind: media?.kind || null,
+      mediaName: media?.name || null,
+    };
+    await fxDbRun('readwrite', store => store.put(rec));
+    fxs.presets.unshift(rec);
+    fxRenderPresets();
+    toast(media ? `Preset “${base}” saved with its ${media.kind === 'video' ? 'video' : 'photo'} ✓` : `Preset “${base}” saved ✓ (the media couldn’t be attached)`, 'success');
+  } catch (err) {
+    toastError(err, 'Couldn’t save the preset');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function fxDeletePreset(id) {
+  try {
+    await fxDbRun('readwrite', store => store.delete(id));
+    fxs.presets = fxs.presets.filter(p => p.id !== id);
+    fxRenderPresets();
+  } catch (err) {
+    toastError(err, 'Couldn’t delete the preset');
+  }
+}
+
+// Load a saved preset: its photo/video back onto the canvas, then its look on top.
+function fxApplyPreset(rec) {
+  fxCloseOpenMenu();
+  if (rec.media) {
+    fxClearReel();
+    const url = URL.createObjectURL(rec.media);
+    if (rec.mediaKind === 'video') fxLoadVideoUrl(url, rec.mediaName || rec.name);
+    else fxLoadImageUrl(url, rec.mediaName || `${rec.name}.jpg`);
+  }
+  fxs.stack = (Array.isArray(rec.stack) ? rec.stack : []).map(s => fxMakeLayer(s.key, s.params, s.enabled)).filter(Boolean).slice(0, 6);
+  fxSelect(rec.key, { snap: { params: rec.params || {}, look: rec.look || undefined } });
+  fxNoteChange();
+  fxRenderInspector();
+}
+
+function fxRenderPresets() {
+  const strip = $('#fxePresets');
+  const wrap = $('#fxePresetWrap');
+  if (!strip || !wrap) return;
+  wrap.hidden = !fxs.presets.length;
+  strip.replaceChildren(...fxs.presets.map(rec => {
+    const cover = rec.thumb
+      ? h('img', { src: rec.thumb, alt: rec.name, loading: 'lazy' })
+      : h('span', { class: 'fxe-preset-noimg' }, (rec.name || '?').slice(0, 2));
+    const del = armConfirm(
+      h('button', { type: 'button', class: 'fxe-preset-del', title: 'Delete this preset', 'aria-label': `Delete ${rec.name}` }, '×'),
+      'Delete this preset',
+      () => fxDeletePreset(rec.id),
+    );
+    const tile = h('button', {
+      type: 'button',
+      class: 'fxe-strip-item fxe-preset-item',
+      title: `${rec.name}${rec.mediaKind ? ` · ${rec.mediaKind === 'video' ? 'video' : 'photo'}` : ' · look only'}`,
+      onclick: () => fxApplyPreset(rec),
+    }, cover, rec.mediaKind === 'video' ? h('span', { class: 'fxe-preset-badge' }, '▶') : null, h('span', { class: 'fxe-preset-name' }, rec.name));
+    return h('div', { class: 'fxe-preset-cell' }, tile, del);
+  }));
 }
 
 function fxLoadItem(item) {
@@ -787,11 +1187,13 @@ function fxLoadItem(item) {
     fxs.pendingItem = item;
     return;
   }
+  fxClearReel();
   if (/^video\//.test(item.mimeType || '')) fxLoadVideoUrl(mediaUrl(item), fileName(item));
   else fxLoadImageUrl(mediaUrl(item), fileName(item), item.id);
 }
 
 function fxLoadDefault() {
+  fxClearReel();
   // Always start on the bundled sample video (so the timeline has something to animate).
   fxLoadVideoUrl(FX_SAMPLE_VIDEO, 'Sample video', { fallback: true });
 }
@@ -906,6 +1308,7 @@ async function fxToggleCamera() {
     toast('This browser doesn’t give access to a camera.', 'error');
     return;
   }
+  fxClearReel();
   const token = ++fxs.loadToken;
   fxSetLoading(true);
   try {
@@ -1022,6 +1425,7 @@ function fxApplySnapshot(snap) {
   fxs.stack = (snap.stack || []).map(s => fxMakeLayer(s.key, s.params, s.enabled)).filter(Boolean).slice(0, 6);
   fxs.editing = null;
   fxSelect(snap.key || fxs.current?.key, { snap });
+  fxHistorySync();
 }
 
 const fxSortKeyframes = () => fxs.keyframes.sort((a, b) => a.time - b.time);
@@ -1220,7 +1624,7 @@ function fxToggleOpenMenu(open) {
   fxs.openMenu = open === undefined ? !fxs.openMenu : open;
   menu.hidden = !fxs.openMenu;
   $('#fxeOpenBtn')?.setAttribute('aria-expanded', String(fxs.openMenu));
-  if (fxs.openMenu) fxRenderStrip();
+  if (fxs.openMenu) { fxRenderStrip(); fxRenderPresets(); }
 }
 const fxCloseOpenMenu = () => fxToggleOpenMenu(false);
 

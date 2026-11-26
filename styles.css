@@ -1180,6 +1180,9 @@ body.view-effects .toasts, body.view-vectors .toasts, body.view-nodes .toasts, b
 .fxe-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 0; background: var(--frame); }
 .fxe-toolbar .btn.active, #fxeCompareBtn.active { border-color: var(--ink); background: var(--amber); color: var(--ink); }
 .fxe-source-name { flex: 1; min-width: 0; overflow: hidden; color: var(--ink); font-size: 11.5px; letter-spacing: 0.04em; text-overflow: ellipsis; white-space: nowrap; }
+.fxe-reel { display: flex; align-items: center; gap: 2px; flex: none; }
+.fxe-reel .icon-btn { width: 28px; height: 28px; font-size: 18px; }
+.fxe-reel-count { min-width: 56px; padding: 0 4px; text-align: center; color: var(--ink); font-size: 11.5px; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
 .fxe-zoom { display: flex; align-items: center; gap: 2px; }
 .fxe-zoom .icon-btn { width: 28px; height: 28px; font-size: 18px; }
 .fxe-zoom .chip-btn { min-width: 52px; justify-content: center; }
@@ -1251,6 +1254,19 @@ body.view-effects .toasts, body.view-vectors .toasts, body.view-nodes .toasts, b
 .fxe-open-item:hover { background: var(--fill-hover); }
 .fxe-open-menu .fxe-strip-wrap { flex-direction: column; align-items: stretch; gap: 6px; padding: 2px 0 0; background: none; }
 .fxe-open-menu .fxe-strip { flex-wrap: wrap; max-height: 230px; overflow-y: auto; }
+
+/* My presets: a saved look + its photo/video. Each cell is a cover tile with a name and a delete badge. */
+.fxe-preset-strip { gap: 8px; }
+.fxe-preset-cell { position: relative; flex: none; }
+.fxe-preset-item { display: flex; flex-direction: column; width: 72px; height: auto; gap: 3px; background: none; cursor: pointer; }
+.fxe-preset-item > img, .fxe-preset-noimg { display: block; width: 72px; height: 56px; object-fit: cover; border: 1px solid var(--line, transparent); border-radius: 2px; background: var(--paper-3); }
+.fxe-preset-noimg { display: flex; align-items: center; justify-content: center; color: var(--ink); font-size: 18px; font-weight: 700; text-transform: uppercase; opacity: 0.7; }
+.fxe-preset-item:hover > img, .fxe-preset-item:hover .fxe-preset-noimg { outline: 2px solid var(--accent); outline-offset: -2px; }
+.fxe-preset-name { max-width: 72px; overflow: hidden; color: var(--ink); font-size: 10.5px; line-height: 1.2; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.fxe-preset-badge { position: absolute; left: 4px; top: 4px; padding: 0 4px; border-radius: 2px; background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 9px; line-height: 15px; pointer-events: none; }
+.fxe-preset-del { position: absolute; right: -4px; top: -4px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: var(--paper-2); color: var(--ink); font-size: 14px; line-height: 16px; opacity: 0; cursor: pointer; box-shadow: var(--shadow-sm, 0 1px 3px rgba(0,0,0,.4)); }
+.fxe-preset-cell:hover .fxe-preset-del { opacity: 1; }
+.fxe-preset-del.confirming { background: var(--danger, #d64545); color: #fff; opacity: 1; width: auto; padding: 0 6px; border-radius: 9px; font-size: 10px; }
 
 /* Timeline: a track with keyframe markers (hard-switch points) + a keys row */
 .fxe-timeline { flex-direction: column; align-items: stretch; gap: 8px; }

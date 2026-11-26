@@ -970,7 +970,7 @@ function onPaste(e) {
   const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith('image/'));
   if (!files.length) return;
   e.preventDefault();
-  if (state.ui.view === 'effects') fxLoadFile(files[0]);
+  if (state.ui.view === 'effects') fxLoadFiles(files);
   else if (state.ui.view === 'vectors') vxLoadFile(files[0]);
   else addRefFiles(files);
 }
@@ -1019,7 +1019,7 @@ function bindDragAndDrop() {
     const file = e.dataTransfer.files[0];
     if (inEffects()) {
       if (item) fxLoadItem(item);
-      else if (file) fxLoadFile(file);
+      else if (e.dataTransfer.files.length) fxLoadFiles(e.dataTransfer.files);
       return;
     }
     if (state.ui.view === 'vectors') {

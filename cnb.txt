@@ -1,32 +1,32 @@
-25.11.2026 #226
+26.11.2026 #227
 země|měna|množství|kód|kurz
-Austrálie|dolar|1|AUD|14,677
-Brazílie|real|1|BRL|3,783
-Čína|žen-min-pi|1|CNY|3,345
-Dánsko|koruna|1|DKK|3,269
-EMU|euro|1|EUR|24,435
-Filipíny|peso|100|PHP|35,104
-Hongkong|dolar|1|HKD|2,849
-Indie|rupie|100|INR|24,209
-Indonesie|rupie|1000|IDR|1,219
-Island|koruna|100|ISK|17,810
-Izrael|nový šekel|1|ILS|6,614
-Japonsko|jen|100|JPY|14,016
-Jižní Afrika|rand|1|ZAR|1,263
-Kanada|dolar|1|CAD|15,665
-Korejská republika|won|100|KRW|1,660
-Maďarsko|forint|100|HUF|6,549
-Malajsie|ringgit|1|MYR|5,420
-Mexiko|peso|1|MXN|1,134
-MMF|ZPČ|1|XDR|29,989
-Norsko|koruna|1|NOK|2,266
-Nový Zéland|dolar|1|NZD|12,190
-Polsko|zlotý|1|PLN|5,456
-Rumunsko|leu|1|RON|4,573
-Singapur|dolar|1|SGD|17,283
-Švédsko|koruna|1|SEK|2,174
-Švýcarsko|frank|1|CHF|26,901
-Thajsko|baht|100|THB|65,444
-Turecko|lira|100|TRY|44,061
-USA|dolar|1|USD|22,329
-Velká Británie|libra|1|GBP|29,180
+Austrálie|dolar|1|AUD|14,783
+Brazílie|real|1|BRL|3,867
+Čína|žen-min-pi|1|CNY|3,346
+Dánsko|koruna|1|DKK|3,272
+EMU|euro|1|EUR|24,455
+Filipíny|peso|100|PHP|34,973
+Hongkong|dolar|1|HKD|2,843
+Indie|rupie|100|INR|24,103
+Indonesie|rupie|1000|IDR|1,215
+Island|koruna|100|ISK|17,850
+Izrael|nový šekel|1|ILS|6,695
+Japonsko|jen|100|JPY|13,994
+Jižní Afrika|rand|1|ZAR|1,270
+Kanada|dolar|1|CAD|15,657
+Korejská republika|won|100|KRW|1,658
+Maďarsko|forint|100|HUF|6,570
+Malajsie|ringgit|1|MYR|5,412
+Mexiko|peso|1|MXN|1,133
+MMF|ZPČ|1|XDR|29,899
+Norsko|koruna|1|NOK|2,281
+Nový Zéland|dolar|1|NZD|12,206
+Polsko|zlotý|1|PLN|5,455
+Rumunsko|leu|1|RON|4,577
+Singapur|dolar|1|SGD|17,269
+Švédsko|koruna|1|SEK|2,183
+Švýcarsko|frank|1|CHF|26,714
+Thajsko|baht|100|THB|65,414
+Turecko|lira|100|TRY|43,971
+USA|dolar|1|USD|22,283
+Velká Británie|libra|1|GBP|29,195
