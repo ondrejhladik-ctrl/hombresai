@@ -1176,6 +1176,22 @@ body.view-effects .toasts, body.view-vectors .toasts, body.view-nodes .toasts, b
 .fxe-card-cat { padding: 0 2px; color: var(--muted); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
 .fxe-none { grid-column: 1 / -1; }
 
+/* Saved tab of the library: one card per saved preset (look + its photo/video) */
+.fxe-cat-saved { font-weight: 600; }
+.fxe-saved-where { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.fxe-saved-where code { font-size: 10.5px; word-break: break-all; }
+.fxe-saved-cell { position: relative; min-width: 0; }
+.fxe-saved-card { position: relative; width: 100%; height: 100%; cursor: pointer; }
+.fxe-saved-card .fxe-preset-noimg { width: 100%; height: auto; aspect-ratio: 1; }
+.fxe-saved-card .fxe-preset-badge { left: 9px; top: 9px; }
+.fxe-saved-acts { position: absolute; top: 9px; right: 9px; display: flex; gap: 4px; opacity: 0; transition: opacity 0.12s; }
+.fxe-saved-cell:hover .fxe-saved-acts, .fxe-saved-cell:focus-within .fxe-saved-acts { opacity: 1; }
+.fxe-saved-act { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 13px; line-height: 22px; cursor: pointer; }
+.fxe-saved-act:hover { background: rgba(0, 0, 0, 0.85); }
+.fxe-saved-act.danger.confirming { width: auto; padding: 0 7px; border-radius: 11px; background: var(--danger, #d64545); font-size: 11px; }
+.fxe-saved-act.danger.confirming::after { content: ' delete?'; }
+.fxe-saved-rename { width: 100%; min-width: 0; padding: 1px 5px; border: 1px solid var(--ink); border-radius: 2px; background: var(--paper); color: var(--ink); font: inherit; font-size: 12px; }
+
 .fxe-stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 0; background: var(--paper); box-shadow: var(--shadow-lg); }
 .fxe-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 0; background: var(--frame); }
 .fxe-toolbar .btn.active, #fxeCompareBtn.active { border-color: var(--ink); background: var(--amber); color: var(--ink); }

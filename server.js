@@ -42,6 +42,7 @@ const THUMBS_DIR = path.join(CACHE_DIR, 'thumbs');
 const PENDING_DIR = path.join(CACHE_DIR, 'pending'); // images still waiting to be uploaded to Drive
 const EFFECTS_DIR = path.join(ROOT, 'effects'); // built-in effects (GLSL files)
 const CUSTOM_EFFECTS_DIR = path.join(EFFECTS_DIR, 'custom'); // effects made by the user or the AI coder
+const FX_PRESETS_DIR = path.join(DATA_DIR, 'presets'); // saved Effects looks, each with its photo/video
 
 const API_BASE = (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
 const GOOGLE = {
@@ -232,6 +233,10 @@ const MIME_BY_EXT = {
   avif: 'image/avif',
   heic: 'image/heic',
   heif: 'image/heif',
+  mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
 };
 const EXT_BY_MIME = {
   'image/png': 'png',
@@ -1823,6 +1828,96 @@ async function handleEffectDelete(body) {
   }
   console.log(`  ✓ effect moved to effects/custom/.trash: ${slug}.glsl`);
   return { ok: true };
+}
+
+// ── Effects presets ─────────────────────────────────────────────────────────
+// A preset is a saved look (effect, sliders, layers, palette…) plus the photo or video it was made on.
+// Each lives in ~/.hombresai/presets as <id>.json + <id>.<ext> (the media) + <id>.thumb.jpg (the cover).
+
+const FX_PRESET_ID = /^p[a-z0-9]{6,30}$/;
+const FX_PRESET_MEDIA = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif', 'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov' };
+const FX_PRESET_MAX_LOOK = 256 * 1024;
+
+const fxPresetFile = id => path.join(FX_PRESETS_DIR, `${id}.json`);
+const publicFxPreset = p => ({
+  ...p,
+  media: p.mediaFile ? `/fxpresets/${p.mediaFile}` : null,
+  thumb: p.thumbFile ? `/fxpresets/${p.thumbFile}` : null,
+});
+
+async function readFxPreset(id) {
+  if (!FX_PRESET_ID.test(String(id || ''))) throw httpError(400, 'Unknown preset.');
+  try {
+    return JSON.parse(await fsp.readFile(fxPresetFile(id), 'utf8'));
+  } catch (err) {
+    if (err.code === 'ENOENT') throw httpError(404, 'That preset no longer exists.');
+    throw err;
+  }
+}
+
+async function handleFxPresetsList() {
+  let names = [];
+  try { names = (await fsp.readdir(FX_PRESETS_DIR)).filter(n => /^p[a-z0-9]+\.json$/.test(n)); } catch { /* none yet */ }
+  const presets = [];
+  for (const n of names) {
+    try { presets.push(publicFxPreset(JSON.parse(await fsp.readFile(path.join(FX_PRESETS_DIR, n), 'utf8')))); } catch { /* broken file – skip it */ }
+  }
+  presets.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  return { presets, dir: FX_PRESETS_DIR };
+}
+
+async function handleFxPresetSave(body) {
+  const name = String(body.name || '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Preset';
+  const key = String(body.key || '').slice(0, 120);
+  if (!key) throw httpError(400, 'Which effect is the preset for?');
+  const obj = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+  const look = { key, params: obj(body.params), look: obj(body.look), stack: Array.isArray(body.stack) ? body.stack.slice(0, 6) : [] };
+  if (Buffer.byteLength(JSON.stringify(look)) > FX_PRESET_MAX_LOOK) throw httpError(400, 'The preset settings are too large.');
+  const id = `p${Date.now().toString(36)}${crypto.randomBytes(3).toString('hex')}`;
+  await fsp.mkdir(FX_PRESETS_DIR, { recursive: true });
+  const rec = { id, name, createdAt: new Date().toISOString(), ...look, mediaKind: null, mediaName: null, mediaFile: null, thumbFile: null };
+  const ext = FX_PRESET_MEDIA[String(body.mediaType || '').toLowerCase()];
+  if (body.media && ext) {
+    rec.mediaFile = `${id}.${ext}`;
+    rec.mediaKind = ['mp4', 'webm', 'mov'].includes(ext) ? 'video' : 'image';
+    rec.mediaName = String(body.mediaName || '').slice(0, 160) || `${name}.${ext}`;
+    await writeFileSafe(path.join(FX_PRESETS_DIR, rec.mediaFile), Buffer.from(String(body.media), 'base64'));
+  }
+  const thumb = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(body.thumb || ''))?.[1];
+  if (thumb && thumb.length < 2 * 1024 * 1024) {
+    rec.thumbFile = `${id}.thumb.jpg`;
+    await writeFileSafe(path.join(FX_PRESETS_DIR, rec.thumbFile), Buffer.from(thumb, 'base64'));
+  }
+  await writeFileSafe(fxPresetFile(id), JSON.stringify(rec, null, 2));
+  console.log(`  ✓ preset saved: ${fxPresetFile(id)}`);
+  return { preset: publicFxPreset(rec), dir: FX_PRESETS_DIR };
+}
+
+async function handleFxPresetRename(body) {
+  const rec = await readFxPreset(body.id);
+  const name = String(body.name || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (!name) throw httpError(400, 'Give the preset a name.');
+  rec.name = name;
+  await writeFileSafe(fxPresetFile(rec.id), JSON.stringify(rec, null, 2));
+  return { preset: publicFxPreset(rec) };
+}
+
+// Deleting moves the preset's files to presets/.trash – they can be put back by hand.
+async function handleFxPresetDelete(body) {
+  const rec = await readFxPreset(body.id);
+  const trash = path.join(FX_PRESETS_DIR, '.trash');
+  await fsp.mkdir(trash, { recursive: true });
+  for (const f of [`${rec.id}.json`, rec.mediaFile, rec.thumbFile].filter(Boolean)) {
+    try { await fsp.rename(path.join(FX_PRESETS_DIR, f), path.join(trash, f)); } catch { /* already gone */ }
+  }
+  console.log(`  ✓ preset moved to presets/.trash: ${rec.id}`);
+  return { ok: true };
+}
+
+async function handleFxPresetsOpen() {
+  await fsp.mkdir(FX_PRESETS_DIR, { recursive: true });
+  openExternal(FX_PRESETS_DIR);
+  return { opened: FX_PRESETS_DIR };
 }
 
 const CODER_INTRO = `You are an expert graphics programmer who writes effects for "hombresai", a browser studio that applies
@@ -3721,6 +3816,11 @@ const routes = [
   ['GET', /^\/api\/effects$/, () => handleEffectsList()],
   ['POST', /^\/api\/effects\/custom$/, body => handleEffectSave(body)],
   ['POST', /^\/api\/effects\/custom\/delete$/, body => handleEffectDelete(body)],
+  ['GET', /^\/api\/effects\/presets$/, () => handleFxPresetsList()],
+  ['POST', /^\/api\/effects\/presets$/, body => handleFxPresetSave(body)],
+  ['POST', /^\/api\/effects\/presets\/rename$/, body => handleFxPresetRename(body)],
+  ['POST', /^\/api\/effects\/presets\/delete$/, body => handleFxPresetDelete(body)],
+  ['POST', /^\/api\/effects\/presets\/open$/, () => handleFxPresetsOpen()],
   ['POST', /^\/api\/effects\/ai$/, body => handleEffectAi(body)],
   ['POST', /^\/api\/effects\/export$/, body => handleEffectExport(body)],
   ['POST', /^\/api\/vectors\/ai$/, body => handleVectorAi(body)],
@@ -3970,6 +4070,7 @@ async function handleRequest(req, res, port) {
     return serveMedia(req, res, media[1], url.searchParams.has('download'));
   }
   if (pathname.startsWith('/thumbs/')) return serveFile(req, res, THUMBS_DIR, pathname.slice('/thumbs/'.length), 'private, max-age=31536000, immutable');
+  if (pathname.startsWith('/fxpresets/')) return serveFile(req, res, FX_PRESETS_DIR, pathname.slice('/fxpresets/'.length), 'private, max-age=31536000, immutable');
   if (pathname.startsWith('/refs/')) return serveFile(req, res, REFS_DIR, pathname.slice('/refs/'.length), 'private, max-age=31536000, immutable');
   return serveFile(req, res, PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname, 'no-cache');
 }

@@ -63,7 +63,8 @@ const fxs = {
   openMenu: false,
   reel: [],             // a batch of local files picked at once (folder or multi-select): [{ file, name }]
   reelIndex: -1,        // which reel file is on the canvas, so ← / → can step through them
-  presets: [],          // saved looks bundled with their photo/video (from IndexedDB), newest first
+  presets: [],          // saved looks bundled with their photo/video (from ~/.hombresai/presets), newest first
+  presetsDir: '',       // where the server keeps them, shown in the Saved tab
   undo: [],             // Ctrl+Z history: look snapshots (effect, sliders, layers, palette…) before each change
   redo: [],
   histBase: null,       // the look as it was after the last recorded change
@@ -757,19 +758,21 @@ function fxStepZoom(dir) {
 // ── Gallery of effects (left) ───────────────────────────────────────────────
 
 function fxRenderLibrary() {
-  const cats = ['All', ...new Set(fxs.cards.map(c => c.category))];
+  const cats = ['All', 'Saved', ...new Set(fxs.cards.map(c => c.category))];
   if (!cats.includes(fxs.category)) fxs.category = 'All';
   $('#fxeCats').replaceChildren(...cats.map(c => h('button', {
     type: 'button',
-    class: `chip-btn small${c === fxs.category ? ' active' : ''}`,
+    class: `chip-btn small${c === fxs.category ? ' active' : ''}${c === 'Saved' ? ' fxe-cat-saved' : ''}`,
     'aria-pressed': String(c === fxs.category),
+    'data-cat': c,
     onclick: () => { fxs.category = c; fxPersist(); fxRenderLibrary(); },
-  }, c)));
+  }, c === 'Saved' ? fxSavedLabel() : c)));
   fxRenderCards();
 }
 
 function fxRenderCards() {
   const q = norm(fxs.query.trim());
+  if (fxs.category === 'Saved') { fxRenderSavedCards(q); return; }
   const list = fxs.cards.filter(c => (fxs.category === 'All' || c.category === fxs.category)
     && (!q || norm(`${c.name} ${c.category} ${c.description}`).includes(q)));
   $('#fxeCards').replaceChildren(...list.map(c => h('button', {
@@ -1025,75 +1028,121 @@ function fxRenderReel() {
   if (n >= 2) $('#fxeReelCount').textContent = `${fxs.reelIndex + 1} / ${n}`;
 }
 
-// ── My presets: a saved look bundled with its photo or video ─────────────────
-// Stored in IndexedDB (not localStorage) because the media blobs are far too big for it.
+// ── Saved presets: a look bundled with its photo or video ────────────────────
+// The local server keeps them in %USERPROFILE%\.hombresai\presets – next to the app's history and cache,
+// outside OneDrive and git: <id>.json (the look) + the photo/video + <id>.thumb.jpg (the cover).
 
-const FX_DB_NAME = 'hombresai';
-const FX_DB_STORE = 'fxPresets';
-let fxDbPromise = null;
+const FX_PRESET_MEDIA_MAX = 45 * 1024 * 1024; // requests are capped at 64 MB and base64 adds a third
+const FX_PRESET_TYPES = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif', mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime' };
+const FX_PRESET_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'];
 
-function fxDb() {
-  if (fxDbPromise) return fxDbPromise;
-  fxDbPromise = new Promise((resolve, reject) => {
-    let req;
-    try { req = indexedDB.open(FX_DB_NAME, 1); } catch (err) { reject(err); return; }
-    req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains(FX_DB_STORE)) req.result.createObjectStore(FX_DB_STORE, { keyPath: 'id' }); };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-  return fxDbPromise;
-}
-
-function fxDbRun(mode, fn) {
-  return fxDb().then(db => new Promise((resolve, reject) => {
-    const tx = db.transaction(FX_DB_STORE, mode);
-    const store = tx.objectStore(FX_DB_STORE);
-    let out;
-    const r = fn(store);
-    if (r) r.onsuccess = () => { out = r.result; };
-    tx.oncomplete = () => resolve(out);
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  }));
+async function fxFetchPresets() {
+  try {
+    const res = await api('/api/effects/presets');
+    fxs.presets = res.presets || [];
+    if (res.dir) fxs.presetsDir = res.dir;
+  } catch { /* server unreachable – keep what we have */ }
+  fxRenderPresets();
 }
 
 async function fxLoadPresets() {
+  await fxFetchPresets();
+  fxMigrateBrowserPresets();
+}
+
+// The first version kept presets in this browser's IndexedDB – move them into the folder once.
+async function fxMigrateBrowserPresets() {
+  if (!window.indexedDB?.databases) return;
   try {
-    const all = await fxDbRun('readonly', store => store.getAll());
-    fxs.presets = (all || []).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  } catch { fxs.presets = []; }
-  fxRenderPresets();
+    if (!(await indexedDB.databases()).some(d => d.name === 'hombresai')) return;
+  } catch { return; }
+  const db = await new Promise(resolve => {
+    const r = indexedDB.open('hombresai');
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => resolve(null);
+  });
+  if (!db) return;
+  if (!db.objectStoreNames.contains('fxPresets')) { db.close(); return; }
+  const old = await new Promise(resolve => {
+    const req = db.transaction('fxPresets').objectStore('fxPresets').getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => resolve([]);
+  });
+  let moved = 0;
+  for (const rec of old.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))) {
+    try {
+      await fxUploadPreset({ name: rec.name, key: rec.key, params: rec.params, look: rec.look, stack: rec.stack, thumb: rec.thumb, media: rec.media, mediaName: rec.mediaName });
+      await new Promise(resolve => {
+        const tx = db.transaction('fxPresets', 'readwrite');
+        tx.objectStore('fxPresets').delete(rec.id);
+        tx.oncomplete = tx.onerror = tx.onabort = resolve;
+      });
+      moved++;
+    } catch { /* leave it in the browser and try again next time */ }
+  }
+  db.close();
+  if (moved) {
+    await fxFetchPresets();
+    toast(`Moved ${moved} saved preset${moved === 1 ? '' : 's'} from the browser to the presets folder.`, 'success');
+  }
+}
+
+function fxMediaType(blob, name = '') {
+  const t = (blob?.type || '').toLowerCase();
+  if (t && t !== 'application/octet-stream') return t === 'image/jpg' ? 'image/jpeg' : t;
+  return FX_PRESET_TYPES[(/\.([a-z0-9]+)$/i.exec(name)?.[1] || '').toLowerCase()] || '';
+}
+
+async function fxUploadPreset(p) {
+  const body = { name: p.name, key: p.key, params: p.params || {}, look: p.look || {}, stack: p.stack || [], thumb: p.thumb || '' };
+  let tooBig = false;
+  if (p.media) {
+    if (p.media.size > FX_PRESET_MEDIA_MAX) tooBig = true;
+    else {
+      body.media = await blobToBase64(p.media);
+      body.mediaType = fxMediaType(p.media, p.mediaName);
+      body.mediaName = p.mediaName || '';
+    }
+  }
+  const res = await api('/api/effects/presets', { body });
+  if (res.dir) fxs.presetsDir = res.dir;
+  return { preset: res.preset, tooBig };
 }
 
 // A small JPEG of the processed canvas (the effect is already baked into it), used as the preset's cover.
 function fxPresetThumb() {
   const src = $('#fxeCanvas');
   if (!src || !src.width || !src.height) return '';
-  const max = 240;
+  const max = 320;
   const r = Math.min(max / src.width, max / src.height, 1);
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.round(src.width * r));
   c.height = Math.max(1, Math.round(src.height * r));
   try {
     c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
-    return c.toDataURL('image/jpeg', 0.72);
+    return c.toDataURL('image/jpeg', 0.75);
   } catch { return ''; }
 }
 
-// Grab the current photo/video as a Blob so it can be stored with the preset.
+// The current photo/video as a Blob, in a format the preset folder keeps (anything odd becomes a JPEG).
 async function fxCaptureMedia() {
   const s = fxs.source;
   if (!s) return null;
-  if (s.kind === 'camera') {
+  const toJpeg = async (el, w, hgt, name) => {
     const c = document.createElement('canvas');
-    c.width = s.width; c.height = s.height;
-    c.getContext('2d').drawImage(s.el, 0, 0);
+    c.width = w;
+    c.height = hgt;
+    c.getContext('2d').drawImage(el, 0, 0, w, hgt);
     const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.92));
-    return blob ? { blob, kind: 'image', name: 'Camera frame.jpg' } : null;
-  }
-  if (!s.url) return null;
+    return blob ? { blob, kind: 'image', name } : null;
+  };
+  if (s.kind === 'camera') return toJpeg(s.el, s.width, s.height, 'Camera frame.jpg');
+  if (!s.url) return s.kind === 'image' ? toJpeg(s.el, s.width, s.height, `${(s.name || 'Image').replace(/\.[^.]+$/, '')}.jpg`) : null;
   try {
     const blob = await (await fetch(s.url)).blob();
+    if (s.kind === 'image' && !FX_PRESET_IMAGE_TYPES.includes(fxMediaType(blob, s.name))) {
+      return toJpeg(s.el, s.width, s.height, `${(s.name || 'Image').replace(/\.[^.]+$/, '')}.jpg`);
+    }
     return { blob, kind: s.kind, name: s.name };
   } catch { return null; }
 }
@@ -1101,31 +1150,31 @@ async function fxCaptureMedia() {
 async function fxSavePreset() {
   if (!fxs.engine || !fxs.source) { toast('Open a photo or video first, then save a preset.', 'error'); return; }
   const cur = fxs.current;
-  if (cur?.draft) { toast('Save the effect first (Code → Save effect), then save the preset.', 'error'); return; }
-  const base = fxs.source.name && !/^Sample (image|video)$/.test(fxs.source.name)
+  if (!cur) return;
+  if (cur.draft) { toast('Save the effect first (Code → Save effect), then save the preset.', 'error'); return; }
+  const name = fxs.source.name && !/^Sample (image|video)$/.test(fxs.source.name)
     ? fxs.source.name.replace(/\.[^.]+$/, '')
-    : (cur?.name || 'Preset');
+    : cur.name || 'Preset';
   const btn = $('#fxeSavePresetBtn');
   if (btn) btn.disabled = true;
   try {
     const media = await fxCaptureMedia();
-    const rec = {
-      id: uid() + Date.now().toString(36),
-      name: base,
-      createdAt: Date.now(),
-      thumb: fxPresetThumb(),
-      key: cur ? cur.key : (state.ui.fx?.key || 'waveform'),
-      params: cur ? fxs.params : (state.ui.fx?.params || {}),
-      look: cur ? fxs.look : (state.ui.fx?.look || null),
+    const { preset, tooBig } = await fxUploadPreset({
+      name,
+      key: cur.key,
+      params: fxs.params,
+      look: fxs.look,
       stack: fxs.stack.map(l => ({ key: l.key, params: l.params, enabled: l.enabled })),
-      media: media?.blob || null,
-      mediaKind: media?.kind || null,
-      mediaName: media?.name || null,
-    };
-    await fxDbRun('readwrite', store => store.put(rec));
-    fxs.presets.unshift(rec);
+      thumb: fxPresetThumb(),
+      media: media?.blob,
+      mediaName: media?.name,
+    });
+    fxs.presets.unshift(preset);
     fxRenderPresets();
-    toast(media ? `Preset “${base}” saved with its ${media.kind === 'video' ? 'video' : 'photo'} ✓` : `Preset “${base}” saved ✓ (the media couldn’t be attached)`, 'success');
+    const what = !preset.mediaKind ? '' : preset.mediaKind === 'video' ? ' with its video' : ' with its photo';
+    toast(tooBig
+      ? `Preset “${name}” saved – the video is over 45 MB, so only the look was kept.`
+      : `Preset “${name}” saved${what} ✓`, tooBig ? 'info' : 'success', { action: { label: 'Show', onClick: fxShowSaved } });
   } catch (err) {
     toastError(err, 'Couldn’t save the preset');
   } finally {
@@ -1135,12 +1184,38 @@ async function fxSavePreset() {
 
 async function fxDeletePreset(id) {
   try {
-    await fxDbRun('readwrite', store => store.delete(id));
+    await api('/api/effects/presets/delete', { body: { id } });
     fxs.presets = fxs.presets.filter(p => p.id !== id);
     fxRenderPresets();
+    toast('Preset deleted (it’s in presets/.trash if you need it back).');
   } catch (err) {
     toastError(err, 'Couldn’t delete the preset');
   }
+}
+
+async function fxRenamePreset(rec, name) {
+  name = name.replace(/\s+/g, ' ').trim();
+  if (!name || name === rec.name) { fxRenderPresets(); return; }
+  try {
+    const res = await api('/api/effects/presets/rename', { body: { id: rec.id, name } });
+    Object.assign(rec, res.preset);
+  } catch (err) {
+    toastError(err, 'Couldn’t rename the preset');
+  }
+  fxRenderPresets();
+}
+
+function fxOpenPresetsFolder() {
+  api('/api/effects/presets/open', { body: {} }).catch(err => toastError(err, 'Couldn’t open the folder'));
+}
+
+function fxShowSaved() {
+  if (state.ui.view !== 'effects') setView('effects');
+  fxs.category = 'Saved';
+  fxs.query = '';
+  if ($('#fxeSearch')) $('#fxeSearch').value = '';
+  fxPersist();
+  fxRenderLibrary();
 }
 
 // Load a saved preset: its photo/video back onto the canvas, then its look on top.
@@ -1148,9 +1223,8 @@ function fxApplyPreset(rec) {
   fxCloseOpenMenu();
   if (rec.media) {
     fxClearReel();
-    const url = URL.createObjectURL(rec.media);
-    if (rec.mediaKind === 'video') fxLoadVideoUrl(url, rec.mediaName || rec.name);
-    else fxLoadImageUrl(url, rec.mediaName || `${rec.name}.jpg`);
+    if (rec.mediaKind === 'video') fxLoadVideoUrl(rec.media, rec.mediaName || rec.name);
+    else fxLoadImageUrl(rec.media, rec.mediaName || `${rec.name}.jpg`);
   }
   fxs.stack = (Array.isArray(rec.stack) ? rec.stack : []).map(s => fxMakeLayer(s.key, s.params, s.enabled)).filter(Boolean).slice(0, 6);
   fxSelect(rec.key, { snap: { params: rec.params || {}, look: rec.look || undefined } });
@@ -1158,7 +1232,11 @@ function fxApplyPreset(rec) {
   fxRenderInspector();
 }
 
+// Both places that list presets: the "My presets" strip in the Open menu and the Saved tab of the library.
 function fxRenderPresets() {
+  const chip = document.querySelector('#fxeCats [data-cat="Saved"]');
+  if (chip) chip.textContent = fxSavedLabel();
+  if (fxs.category === 'Saved') fxRenderCards();
   const strip = $('#fxePresets');
   const wrap = $('#fxePresetWrap');
   if (!strip || !wrap) return;
@@ -1180,6 +1258,58 @@ function fxRenderPresets() {
     }, cover, rec.mediaKind === 'video' ? h('span', { class: 'fxe-preset-badge' }, '▶') : null, h('span', { class: 'fxe-preset-name' }, rec.name));
     return h('div', { class: 'fxe-preset-cell' }, tile, del);
   }));
+}
+
+const fxSavedLabel = () => `Saved${fxs.presets.length ? ` (${fxs.presets.length})` : ''}`;
+
+// The Saved tab: one card per preset (cover with the look baked in), plus where they live on disk.
+function fxRenderSavedCards(q) {
+  const list = fxs.presets.filter(p => !q || norm(`${p.name} ${p.mediaName || ''} ${fxs.cards.find(c => c.key === p.key)?.name || ''}`).includes(q));
+  const where = h('div', { class: 'fxe-saved-where' },
+    h('span', null, 'Saved with their photo or video in ', h('code', null, fxs.presetsDir || '%USERPROFILE%\\.hombresai\\presets')),
+    h('button', { type: 'button', class: 'link-btn', onclick: fxOpenPresetsFolder }, 'Open folder'));
+  const cards = list.map(rec => {
+    const effectName = fxs.cards.find(c => c.key === rec.key)?.name || rec.key;
+    const nameEl = h('span', { class: 'fxe-card-name' }, rec.name);
+    const card = h('button', {
+      type: 'button',
+      class: 'fxe-card fxe-saved-card',
+      title: `${rec.name} – ${effectName}${rec.mediaName ? ` on ${rec.mediaName}` : ''}`,
+      onclick: () => fxApplyPreset(rec),
+    },
+    rec.thumb ? h('img', { class: 'fxe-thumb', src: rec.thumb, alt: '', loading: 'lazy' }) : h('span', { class: 'fxe-thumb fxe-preset-noimg' }, (rec.name || '?').slice(0, 2)),
+    rec.mediaKind === 'video' ? h('span', { class: 'fxe-preset-badge' }, '▶ video') : null,
+    nameEl,
+    h('span', { class: 'fxe-card-cat' }, effectName));
+    const rename = h('button', {
+      type: 'button',
+      class: 'fxe-saved-act',
+      title: 'Rename',
+      'aria-label': `Rename ${rec.name}`,
+      onclick: e => {
+        e.stopPropagation();
+        const input = h('input', { class: 'fxe-saved-rename', value: rec.name, maxlength: '80', 'aria-label': 'Preset name' });
+        let done = false;
+        const finish = save => { if (done) return; done = true; if (save) fxRenamePreset(rec, input.value); else fxRenderPresets(); };
+        input.addEventListener('keydown', ev => {
+          ev.stopPropagation();
+          if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+          if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+        });
+        input.addEventListener('click', ev => ev.stopPropagation());
+        input.addEventListener('blur', () => finish(true));
+        nameEl.replaceWith(input);
+        input.focus();
+        input.select();
+      },
+    }, '✎');
+    const del = armConfirm(h('button', { type: 'button', class: 'fxe-saved-act danger', title: 'Delete this preset', 'aria-label': `Delete ${rec.name}` }, '×'), 'Delete this preset', () => fxDeletePreset(rec.id));
+    return h('div', { class: 'fxe-saved-cell' }, card, h('div', { class: 'fxe-saved-acts' }, rename, del));
+  });
+  const empty = !fxs.presets.length
+    ? h('p', { class: 'muted small fxe-none' }, 'No saved presets yet. Set up a look and click “Save preset” in the top bar – the photo or video is saved with it.')
+    : !list.length ? h('p', { class: 'muted small fxe-none' }, 'No presets match.') : null;
+  $('#fxeCards').replaceChildren(where, ...cards, ...(empty ? [empty] : []));
 }
 
 function fxLoadItem(item) {
